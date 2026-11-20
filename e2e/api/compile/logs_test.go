@@ -149,8 +149,13 @@ default mask.fruits.supplier := {"replace": {"value": "***"}}
 	}
 
 	dl := map[string]any{
-		"decision_id": "",
-		"path":        path,
+		"decision_id":  "",
+		"path":         path,
+		"rule_id":      "data.filters.include",
+		"rule_package": "data.filters",
+		// The compile endpoint does not track evaluated rules, so the version
+		// falls back to the deterministic "unversioned" placeholder.
+		"policy_version": "unversioned",
 		"result": map[string]any{
 			"query": "WHERE f.n IN (E'banana', E'orange')",
 			"masks": map[string]any{

@@ -39,7 +39,11 @@ type Info struct {
 	Trace               []*topdown.Event
 	RequestID           uint64
 	EvaluatedRuleLabels []map[string]any
-	Custom              map[string]any
+	// EvaluatedRule is the rule that determined the decision, with its package
+	// and a version specific to that rule's source. It is populated even when
+	// no rule was tracked, in which case it carries deterministic placeholders.
+	EvaluatedRule topdown.EvaluatedRule
+	Custom        map[string]any
 }
 
 // BundleInfo contains information describing a bundle.

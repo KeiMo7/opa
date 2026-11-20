@@ -170,6 +170,29 @@ constant key on it is rejected, even though tests replace it using `with`.
 Empty collections in the types of rules that a with modifier targets are
 now typed as any.
 
+### Decision logs: broader masking and auditable drops
+
+Decision log masking now covers every part of an event that can carry original
+values: `input` and `result` as before, plus `intermediate_results`,
+`mapped_result`, `request_context` HTTP headers, `error`, and `custom`. Masked
+events record the effective `masking_version`, which can be pinned with
+`decision_logs.masking.version`; otherwise it is a digest of the active rules.
+
+When a mask rule cannot be applied (undefined path or wrong type), the event is
+no longer persisted unmasked. It is dropped and counted by default; set
+`decision_logs.masking.undefined_path_policy: clear` to keep the event with the
+targeted part emptied instead. Mask rule evaluation and parse failures drop the
+event and increment their own counters. Masking still runs before buffering, so
+the upload queue never holds an unmasked copy.
+
+Every event now carries `rule_id`, `rule_package` and `policy_version`, the
+latter versioning the individual deciding rule's source rather than the whole
+bundle snapshot. Events dropped by a rate, buffer, size or masking limit leave
+a searchable drop record (decision ID, reason, timestamp). Events truncated to
+fit `upload_size_limit_bytes` are marked `truncated` with a `truncated_parts`
+list. `decision_logs.reporting.sample_rate` can retain a fraction of high-volume
+logs as correlatable summaries.
+
 ### Dependency Updates
 
   - build(deps): Bump github.com/agnivade/levenshtein from 1.2.1 to 1.2.2

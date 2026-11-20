@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"math"
+	"slices"
 
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/logging"
@@ -62,6 +63,10 @@ type chunkEncoder struct {
 	// pending holds the events written to the current chunk, so that a chunk
 	// that turns out too large can be split without decompressing and decoding it.
 	pending []pendingEvent
+
+	// onDrop, when set, is told about events discarded by the encoder because
+	// they could not fit within the upload size limit.
+	onDrop func(EventV1)
 }
 
 // pendingEvent is an event along with its already serialized form. The
@@ -121,6 +126,7 @@ func (enc *chunkEncoder) Encode(event EventV1, eventBytes []byte) ([][]byte, err
 	if enc.lastDroppedNDSize != 0 && int64(len(eventBytes)) >= enc.lastDroppedNDSize {
 		if event.NDBuiltinCache == nil {
 			enc.incrMetric(logEncodingFailureCounterName)
+			enc.notifyDrop(event)
 			if enc.logger != nil {
 				enc.logger.Error("Log encoding failed: received a decision event size (%d) that exceeded the upload_size_limit_bytes (%d). No ND cache to drop.",
 					len(eventBytes), enc.limit)
@@ -129,11 +135,12 @@ func (enc *chunkEncoder) Encode(event EventV1, eventBytes []byte) ([][]byte, err
 		}
 
 		// re-encode the event with the ND cache removed
-		event.NDBuiltinCache = nil
+		event = markTruncated(event, "nd_builtin_cache")
 		if enc.logger != nil {
 			enc.logger.Error("ND builtins cache dropped from this event to fit under maximum upload size limits. Increase upload size limit or change usage of non-deterministic builtins.")
 		}
 		enc.incrMetric(logNDBDropCounterName)
+		enc.incrMetric(logTruncatedCounterName)
 
 		var err error
 		eventBytes, err = json.Marshal(&event)
@@ -192,13 +199,14 @@ func (enc *chunkEncoder) Encode(event EventV1, eventBytes []byte) ([][]byte, err
 		// If there's no ND builtins cache in the event, then we don't need to retry encoding anything.
 		if event.NDBuiltinCache == nil {
 			enc.incrMetric(logEncodingFailureCounterName)
+			enc.notifyDrop(event)
 			if enc.logger != nil {
 				enc.logger.Error("Log encoding failed: received a decision event size (%d) that exceeded the upload_size_limit_bytes (%d). No ND cache to drop.", currentSize, enc.limit)
 			}
 			return nil, nil
 		}
 		// re-encode the event with the ND cache removed
-		event.NDBuiltinCache = nil
+		event = markTruncated(event, "nd_builtin_cache")
 
 		eventBytes, err = json.Marshal(&event)
 		if err != nil {
@@ -216,6 +224,7 @@ func (enc *chunkEncoder) Encode(event EventV1, eventBytes []byte) ([][]byte, err
 
 		if len(result) > int(enc.limit) {
 			enc.incrMetric(logEncodingFailureCounterName)
+			enc.notifyDrop(event)
 			if enc.logger != nil {
 				enc.logger.Error("Log encoding failed: received a decision event size (%d) that exceeded the upload_size_limit_bytes (%d) even after dropping the ND cache.",
 					len(eventBytes), enc.limit)
@@ -233,6 +242,7 @@ func (enc *chunkEncoder) Encode(event EventV1, eventBytes []byte) ([][]byte, err
 			enc.logger.Error("ND builtins cache dropped from this event to fit under maximum upload size limits. Increase upload size limit or change usage of non-deterministic builtins.")
 		}
 		enc.incrMetric(logNDBDropCounterName)
+		enc.incrMetric(logTruncatedCounterName)
 		// success! the incoming chunk lost the ND cache, but it wasn't dropped entirely
 		// scale up the uncompressed limit using the uncompressed event size as a base
 		if int64(len(eventBytes)) > enc.uncompressedLimit {
@@ -475,6 +485,32 @@ func (enc *chunkEncoder) incrMetric(name string) {
 	}
 }
 
+func (enc *chunkEncoder) notifyDrop(event EventV1) {
+	if enc.onDrop != nil {
+		enc.onDrop(event)
+	}
+}
+
+// markTruncated clears the named event part and records that the event no
+// longer carries a complete result. Parts are listed in the event so receivers
+// can tell what was removed without the removed values being logged.
+func markTruncated(event EventV1, parts ...string) EventV1 {
+	for _, part := range parts {
+		switch part {
+		case "nd_builtin_cache":
+			event.NDBuiltinCache = nil
+		case "intermediate_results":
+			event.IntermediateResults = nil
+		}
+	}
+	event.Truncated = true
+	for _, part := range parts {
+		if !slices.Contains(event.TruncatedParts, part) {
+			event.TruncatedParts = append(event.TruncatedParts, part)
+		}
+	}
+	return event
+}
 func (enc *chunkEncoder) updateMetric(name string, value int64) {
 	if enc.metrics != nil {
 		enc.metrics.Histogram(name).Update(value)

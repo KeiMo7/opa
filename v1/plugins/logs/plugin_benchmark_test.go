@@ -279,7 +279,7 @@ func BenchmarkMaskingNop(b *testing.B) {
 	}
 
 	for b.Loop() {
-		if err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
+		if _, err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -337,7 +337,7 @@ mask contains "/input/absent%d" if {
 			plugin := New(cfg, manager)
 
 			for b.Loop() {
-				if err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
+				if _, err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -386,7 +386,7 @@ func BenchmarkMaskingErase(b *testing.B) {
 	}
 
 	for b.Loop() {
-		if err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
+		if _, err := plugin.maskEvent(ctx, nil, input, &event); err != nil {
 			b.Fatal(err)
 		}
 

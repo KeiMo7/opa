@@ -5,6 +5,7 @@
 package topdown_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -353,4 +354,99 @@ allow if input.role == "admin"
 			}
 		})
 	}
+}
+
+func TestEvaluatedRuleProvenance(t *testing.T) {
+	module := `package test
+
+allow if input.role == "admin"
+
+deny if input.role == "banned"
+`
+	m := ast.MustParseModuleWithOpts(module, ast.ParserOptions{ProcessAnnotation: true})
+	c := ast.NewCompiler()
+	c.Compile(map[string]*ast.Module{"test.rego": m})
+	if c.Failed() {
+		t.Fatal(c.Errors)
+	}
+
+	input := ast.MustParseTerm(`{"role": "admin"}`)
+	store := inmem.New()
+	ctx := t.Context()
+	txn := storage.NewTransactionOrDie(ctx, store)
+	defer store.Abort(ctx, txn)
+
+	tracker := &topdown.EvaluatedRuleTracker{}
+	query := topdown.NewQuery(ast.MustParseBody("data.test.allow")).
+		WithCompiler(c).
+		WithStore(store).
+		WithTransaction(txn).
+		WithInput(input).
+		WithEvaluatedRuleTracker(tracker)
+
+	if _, err := query.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	rule := tracker.PrimaryFallback("/test/allow")
+	if exp, act := "data.test.allow", rule.ID; exp != act {
+		t.Errorf("expected rule id %q, got %q", exp, act)
+	}
+	if exp, act := "data.test", rule.Package; exp != act {
+		t.Errorf("expected package %q, got %q", exp, act)
+	}
+	if rule.Version == "" || rule.Version == topdown.UnversionedPolicyVersion {
+		t.Errorf("expected a per-rule version, got %q", rule.Version)
+	}
+
+	// Changing the rule's source must change the version, without touching the
+	// package or rule id.
+	m2 := ast.MustParseModuleWithOpts(strings.Replace(module, `input.role == "admin"`, `input.role == "administrator"`, 1),
+		ast.ParserOptions{ProcessAnnotation: true})
+	c2 := ast.NewCompiler()
+	c2.Compile(map[string]*ast.Module{"test.rego": m2})
+	if c2.Failed() {
+		t.Fatal(c2.Errors)
+	}
+	txn2 := storage.NewTransactionOrDie(ctx, store)
+	defer store.Abort(ctx, txn2)
+	tracker2 := &topdown.EvaluatedRuleTracker{}
+	query2 := topdown.NewQuery(ast.MustParseBody("data.test.allow")).
+		WithCompiler(c2).
+		WithStore(store).
+		WithTransaction(txn2).
+		WithInput(ast.MustParseTerm(`{"role": "administrator"}`)).
+		WithEvaluatedRuleTracker(tracker2)
+	if _, err := query2.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rule := tracker2.PrimaryFallback("/test/allow"); rule.Version == tracker.PrimaryFallback("/test/allow").Version {
+		t.Error("expected a changed rule to have a different version")
+	}
+}
+
+func TestEvaluatedRuleFallbacks(t *testing.T) {
+	t.Run("no tracked rules", func(t *testing.T) {
+		var tracker *topdown.EvaluatedRuleTracker
+		rule := tracker.PrimaryFallback("/http/authz/allow")
+		if rule.ID != "data.http.authz.allow" {
+			t.Errorf("expected path-derived rule id, got %q", rule.ID)
+		}
+		if rule.Package != "data.http.authz" {
+			t.Errorf("expected path-derived package, got %q", rule.Package)
+		}
+		if rule.Version != topdown.UnversionedPolicyVersion {
+			t.Errorf("expected %q, got %q", topdown.UnversionedPolicyVersion, rule.Version)
+		}
+	})
+
+	t.Run("no path", func(t *testing.T) {
+		rule := (&topdown.EvaluatedRuleTracker{}).PrimaryFallback("")
+		if rule.ID != topdown.UnknownRuleID || rule.Package != topdown.UnknownRulePackage {
+			t.Errorf("expected placeholders, got %+v", rule)
+		}
+		if rule.Version != topdown.UnversionedPolicyVersion {
+			t.Errorf("expected %q, got %q", topdown.UnversionedPolicyVersion, rule.Version)
+		}
+	})
 }

@@ -19,7 +19,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2752,7 +2754,7 @@ func TestPluginMasking(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := plugin.maskEvent(ctx, nil, input, event); err != nil {
+			if _, err := plugin.maskEvent(ctx, nil, input, event); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2799,7 +2801,7 @@ func TestPluginMasking(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				if err := plugin.maskEvent(ctx, nil, input, event); err != nil {
+				if _, err := plugin.maskEvent(ctx, nil, input, event); err != nil {
 					t.Fatal(err)
 				}
 
@@ -2872,7 +2874,7 @@ func TestPluginPreparedQueryCacheConcurrency(t *testing.T) {
 					return
 				}
 
-				if err := plugin.maskEvent(ctx, nil, value, event); err != nil {
+				if _, err := plugin.maskEvent(ctx, nil, value, event); err != nil {
 					t.Error(err)
 					return
 				}
@@ -3199,13 +3201,13 @@ func TestPluginMaskErrorHandling(t *testing.T) {
 	}
 
 	expErr := "storage_invalid_txn_error: unexpected transaction type *logs.badTransaction"
-	err = plugin.maskEvent(ctx, &badTransaction{}, input, event)
+	_, err = plugin.maskEvent(ctx, &badTransaction{}, input, event)
 	if err.Error() != expErr {
 		t.Fatalf("Expected error %v got %v", expErr, err)
 	}
 
 	// We expect the same error on a second call, even though the mask query failed to prepare and won't be prepared again.
-	err = plugin.maskEvent(ctx, nil, input, event)
+	_, err = plugin.maskEvent(ctx, nil, input, event)
 	if err.Error() != expErr {
 		t.Fatalf("Expected error %v got %v", expErr, err)
 	}
@@ -3812,6 +3814,23 @@ func TestEventV1ToAST(t *testing.T) {
 					},
 				},
 				inputAST: astInput,
+			},
+		},
+		{
+			note: "event with masking and provenance metadata",
+			event: EventV1{
+				DecisionID:     "1234567890",
+				Path:           "/http/authz/allow",
+				Timestamp:      time.Now(),
+				Erased:         []string{"/input/password"},
+				Masked:         []string{"/input/token"},
+				MaskingVersion: "mask-v1",
+				RuleID:         "data.http.authz.allow",
+				RulePackage:    "data.http.authz",
+				PolicyVersion:  "abc123",
+				Sampled:        true,
+				Truncated:      true,
+				TruncatedParts: []string{"nd_builtin_cache"},
 			},
 		},
 		{
@@ -4643,5 +4662,609 @@ func TestRoundTripAnyNativeValues(t *testing.T) {
 	}
 	if exp := map[string]any{"n": json.Number("1")}; !reflect.DeepEqual(got, exp) {
 		t.Fatalf("expected %v, got %v", exp, got)
+	}
+}
+
+// TestPluginMasksNewParts covers masking of every event part that can carry
+// original values: request headers, error text, intermediate results and
+// mapped results, in addition to input and result.
+func TestPluginMasksNewParts(t *testing.T) {
+	t.Parallel()
+
+	rawPolicy := []byte(`
+		package system.log
+		import rego.v1
+
+		mask contains "/input/password"
+		mask contains "/result/token"
+		mask contains "/request_context/http/headers/Authorization"
+		mask contains "/error"
+		mask contains "/intermediate_results/secret"
+		mask contains "/mapped_result/ssn"
+		mask contains {"op": "upsert", "path": "/mapped_result/token", "value": "**REDACTED**"}
+	`)
+
+	ctx := context.Background()
+	store := inmem.New()
+	if err := storage.Txn(ctx, store, storage.WriteParams, func(txn storage.Transaction) error {
+		return store.UpsertPolicy(ctx, txn, "test.rego", rawPolicy)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	backend := &testPlugin{}
+	manager, err := plugins.New(nil, "test", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Register("test_plugin", backend)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := ParseConfig([]byte(`{
+		"plugin": "test_plugin",
+		"request_context": {"http": {"headers": ["Authorization", "Accept"]}}
+	}`), nil, []string{"test_plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := New(config, manager)
+
+	input := any(map[string]any{"password": "hunter2", "user": "bob"})
+	result := any(map[string]any{"token": "result-token", "allow": true})
+	mapped := any(map[string]any{"token": "mapped-token", "ssn": "123-45-6789"})
+	origInput := any(map[string]any{"password": "hunter2", "user": "bob"})
+	origResult := any(map[string]any{"token": "result-token", "allow": true})
+
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID:          "d1",
+		Path:                "authz/allow",
+		Input:               &input,
+		Results:             &result,
+		MappedResults:       &mapped,
+		IntermediateResults: map[string]any{"secret": "intermediate-secret", "public": 1},
+		Error:               errors.New("dial failed with password=hunter2"),
+		HTTPRequestContext: logging.HTTPRequestContext{
+			Header: http.Header{
+				"Authorization": []string{"Bearer very-secret-token"},
+				"Accept":        []string{"application/json"},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(backend.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(backend.events))
+	}
+	event := backend.events[0]
+
+	if m := *event.Input; reflect.DeepEqual(m, origInput) {
+		t.Fatal("expected input to be masked")
+	} else if _, ok := m.(map[string]any)["password"]; ok {
+		t.Fatal("expected input.password to be erased")
+	}
+
+	if m := *event.Result; reflect.DeepEqual(m, origResult) {
+		t.Fatal("expected result to be masked")
+	} else if _, ok := m.(map[string]any)["token"]; ok {
+		t.Fatal("expected result.token to be erased")
+	}
+
+	if _, ok := event.IntermediateResults["secret"]; ok {
+		t.Fatal("expected intermediate_results.secret to be erased")
+	}
+
+	if _, ok := (*event.MappedResult).(map[string]any)["ssn"]; ok {
+		t.Fatal("expected mapped_result.ssn to be erased")
+	}
+	if v := (*event.MappedResult).(map[string]any)["token"]; v != "**REDACTED**" {
+		t.Fatalf("expected mapped_result.token to be redacted, got %v", v)
+	}
+
+	if event.Error != nil {
+		t.Fatalf("expected error to be erased, got %v", event.Error)
+	}
+
+	headers := event.RequestContext.HTTPRequest.Headers
+	if _, ok := headers["Authorization"]; ok {
+		t.Fatal("expected Authorization header to be erased")
+	}
+	if got := headers["Accept"]; len(got) != 1 || got[0] != "application/json" {
+		t.Fatalf("expected Accept header to be preserved, got %v", got)
+	}
+
+	// Every masked part leaves a trace, but no original value.
+	for _, want := range []string{
+		"/input/password",
+		"/result/token",
+		"/request_context/http/headers/Authorization",
+		"/error",
+		"/intermediate_results/secret",
+		"/mapped_result/ssn",
+	} {
+		if !slices.Contains(event.Erased, want) {
+			t.Errorf("expected %q in erased list %v", want, event.Erased)
+		}
+	}
+	if !slices.Contains(event.Masked, "/mapped_result/token") {
+		t.Errorf("expected upsert to be traced in masked list %v", event.Masked)
+	}
+	if event.MaskingVersion == "" {
+		t.Error("expected masking_version to be recorded")
+	}
+
+	// The event must be JSON clean of the raw credentials.
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"hunter2", "very-secret-token", "intermediate-secret", "123-45-6789"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Errorf("serialized event contains original value %q: %s", secret, raw)
+		}
+	}
+}
+
+// TestPluginMaskUndefinedPath asserts that an event is not persisted unmasked
+// when a mask rule targets a path that does not exist.
+func TestPluginMaskUndefinedPath(t *testing.T) {
+	t.Parallel()
+
+	rawPolicy := []byte(`
+		package system.log
+		import rego.v1
+		mask contains "/input/does_not_exist"
+	`)
+
+	for _, tc := range []struct {
+		policy   string
+		expected int
+	}{
+		{policy: "drop", expected: 0},
+		{policy: "clear", expected: 1},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			ctx := context.Background()
+			store := inmem.New()
+			if err := storage.Txn(ctx, store, storage.WriteParams, func(txn storage.Transaction) error {
+				return store.UpsertPolicy(ctx, txn, "test.rego", rawPolicy)
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			backend := &testPlugin{}
+			manager, err := plugins.New(nil, "test", store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.Register("test_plugin", backend)
+			if err := manager.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := fmt.Sprintf(`{"plugin": "test_plugin", "masking": {"undefined_path_policy": %q}}`, tc.policy)
+			config, err := ParseConfig([]byte(cfg), nil, []string{"test_plugin"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plugin := New(config, manager).WithMetrics(metrics.New())
+
+			input := any(map[string]any{"password": "hunter2"})
+			if err := plugin.Log(ctx, &server.Info{
+				DecisionID: "d1", Path: "authz/allow", Input: &input,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if len(backend.events) != tc.expected {
+				t.Fatalf("expected %d events, got %d", tc.expected, len(backend.events))
+			}
+
+			if tc.expected == 0 {
+				if plugin.metrics.Counter(logMaskUndefinedDropCounterName).Value().(uint64) != 1 {
+					t.Error("expected undefined path drop counter to increment")
+				}
+				recs := plugin.DropRecordsForDecision("d1")
+				if len(recs) != 1 || recs[0].Reason != dropReasonMaskUndefined {
+					t.Fatalf("expected a searchable drop record, got %v", recs)
+				}
+			} else {
+				event := backend.events[0]
+				if m, ok := (*event.Input).(map[string]any); !ok || len(m) != 0 {
+					t.Fatalf("expected input to be conservatively cleared, got %v", *event.Input)
+				}
+				if bytes.Contains(mustJSON(t, event), []byte("hunter2")) {
+					t.Fatal("event still contains the original value")
+				}
+			}
+		})
+	}
+}
+
+// TestPluginRateLimitDropRecord asserts that rate limited events leave a
+// searchable drop record keyed by decision ID.
+func TestPluginRateLimitDropRecord(t *testing.T) {
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(10*time.Second))
+	defer cancel()
+
+	fixture := newTestFixture(t, testFixtureOptions{
+		ReportingBufferType:            eventBufferType,
+		ReportingMaxDecisionsPerSecond: 1,
+		TriggerMode:                    plugins.TriggerManual,
+	})
+	defer fixture.server.stop()
+	fixture.plugin = fixture.plugin.WithMetrics(metrics.New())
+
+	for i := range 10 {
+		if err := fixture.plugin.Log(ctx, &server.Info{
+			DecisionID: strconv.Itoa(i),
+			Path:       "authz/allow",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var found int
+	for i := range 10 {
+		if recs := fixture.plugin.DropRecordsForDecision(strconv.Itoa(i)); len(recs) > 0 {
+			found++
+			if recs[0].Reason != dropReasonRateLimit {
+				t.Errorf("expected reason %q, got %q", dropReasonRateLimit, recs[0].Reason)
+			}
+			if recs[0].Time.IsZero() {
+				t.Error("expected a timestamp on the drop record")
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("expected at least one searchable drop record")
+	}
+	if dropped := fixture.plugin.metrics.Counter(logRateLimitExDropCounterName).Value().(uint64); dropped != uint64(found) {
+		t.Errorf("expected %d rate limit drops, counter says %d", found, dropped)
+	}
+}
+
+// TestPluginTruncatedEventMarker asserts the encoding path explicitly marks an
+// event as truncated and names the removed part, without leaking its values.
+func TestPluginTruncatedEventMarker(t *testing.T) {
+	t.Parallel()
+
+	event := eventWithNDCache()
+	event.DecisionID = "d1"
+
+	enc := newChunkEncoder(200).WithMetrics(metrics.New())
+	eventBytes, err := json.Marshal(&event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Encode(event, eventBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	chunks, err := enc.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	events, err := newChunkDecoder(chunks[0]).decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	got := events[0]
+	if !got.Truncated {
+		t.Fatal("expected truncated marker")
+	}
+	if !slices.Contains(got.TruncatedParts, "nd_builtin_cache") {
+		t.Fatalf("expected truncated_parts to name the removed part, got %v", got.TruncatedParts)
+	}
+	if got.NDBuiltinCache != nil {
+		t.Fatal("expected nd_builtin_cache to be removed")
+	}
+	if strings.Contains(string(mustJSON(t, got)), "Wasted space") {
+		t.Fatal("truncated event must not retain removed values")
+	}
+}
+
+// TestPluginRuleProvenance asserts each event identifies the deciding rule,
+// its package and a per-policy version.
+func TestPluginRuleProvenance(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	manager, _ := plugins.New(nil, "test-instance-id", inmem.New())
+
+	backend := &testPlugin{}
+	manager.Register("test_plugin", backend)
+
+	config, err := ParseConfig([]byte(`{"plugin": "test_plugin"}`), nil, []string{"test_plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := New(config, manager)
+
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID: "d1",
+		Path:       "authz/allow",
+		EvaluatedRule: topdown.EvaluatedRule{
+			ID:      "data.authz.allow",
+			Package: "data.authz",
+			Version: "abc123",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	event := backend.events[0]
+	if event.RuleID != "data.authz.allow" || event.RulePackage != "data.authz" || event.PolicyVersion != "abc123" {
+		t.Fatalf("unexpected provenance: %+v", event)
+	}
+
+	// Missing provenance must fall back to deterministic placeholders, never
+	// empty strings. The server and SDK supply these, so an event that carries
+	// a partially-set provenance is completed here too.
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID:    "d2",
+		EvaluatedRule: topdown.EvaluatedRule{ID: "data.authz.deny"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	event = backend.events[1]
+	if event.RuleID != "data.authz.deny" || event.RulePackage != topdown.UnknownRulePackage || event.PolicyVersion != topdown.UnversionedPolicyVersion {
+		t.Fatalf("expected non-empty placeholders, got %+v", event)
+	}
+
+	// An event from the server always carries provenance, so it is present
+	// even when no rule was tracked.
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID:    "d3",
+		EvaluatedRule: (&topdown.EvaluatedRuleTracker{}).PrimaryFallback("authz/allow"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	event = backend.events[2]
+	if event.RuleID != "data.authz.allow" || event.RulePackage != "data.authz" || event.PolicyVersion != topdown.UnversionedPolicyVersion {
+		t.Fatalf("unexpected path-derived provenance: %+v", event)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestPluginSampledSummary asserts that a sampled-out event is replaced by a
+// correlatable summary carrying the decision ID, result and rule provenance,
+// and no masked values.
+func TestPluginSampledSummary(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	manager, _ := plugins.New(nil, "test-instance-id", inmem.New())
+
+	backend := &testPlugin{}
+	manager.Register("test_plugin", backend)
+
+	config, err := ParseConfig([]byte(`{"plugin": "test_plugin", "reporting": {"sample_rate": 0.0000001}}`), nil, []string{"test_plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := New(config, manager)
+
+	input := any(map[string]any{"password": "hunter2"})
+	result := any(true)
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID: "d1",
+		Path:       "authz/allow",
+		Input:      &input,
+		Results:    &result,
+		EvaluatedRule: topdown.EvaluatedRule{
+			ID:      "data.authz.allow",
+			Package: "data.authz",
+			Version: "v1",
+		},
+		HTTPRequestContext: logging.HTTPRequestContext{Header: http.Header{"Authorization": []string{"Bearer secret"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(backend.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(backend.events))
+	}
+	event := backend.events[0]
+	if !event.Sampled {
+		t.Fatal("expected sampled marker")
+	}
+	if event.DecisionID != "d1" {
+		t.Errorf("expected decision id to be retained, got %q", event.DecisionID)
+	}
+	if event.Result == nil || *event.Result != true {
+		t.Errorf("expected result to be retained, got %v", event.Result)
+	}
+	if event.RuleID != "data.authz.allow" {
+		t.Errorf("expected rule id to be retained, got %q", event.RuleID)
+	}
+	if event.Input != nil || event.RequestContext != nil {
+		t.Fatal("summary must not retain input or request headers")
+	}
+	raw := mustJSON(t, event)
+	for _, secret := range [][]byte{[]byte("hunter2"), []byte("Bearer secret")} {
+		if bytes.Contains(raw, secret) {
+			t.Fatalf("summary contains original value: %s", raw)
+		}
+	}
+}
+
+// TestPluginMasksBeforeBuffer asserts the buffer never receives an unmasked
+// copy: by the time the event is queued for upload, it is already masked.
+func TestPluginMasksBeforeBuffer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := inmem.New()
+	rawPolicy := []byte(`
+		package system.log
+		import rego.v1
+		mask contains "/input/password"
+	`)
+	if err := storage.Txn(ctx, store, storage.WriteParams, func(txn storage.Transaction) error {
+		return store.UpsertPolicy(ctx, txn, "test.rego", rawPolicy)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := plugins.New(nil, "test", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{Service: "svc"}
+	trigger := plugins.DefaultTriggerMode
+	if err := cfg.validateAndInjectDefaults([]string{"svc"}, nil, &trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Reporting.BufferType = eventBufferType
+	cfg.Reporting.Trigger = &trigger
+	eventLimit := int64(100)
+	cfg.Reporting.BufferSizeLimitEvents = &eventLimit
+
+	plugin := New(cfg, manager)
+	if err := plugin.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	input := any(map[string]any{"password": "hunter2"})
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID: "d1", Path: "authz/allow", Input: &input,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := plugin.b.(*eventBuffer)
+	if len(b.buffer) != 1 {
+		t.Fatalf("expected 1 buffered event, got %d", len(b.buffer))
+	}
+	buffered := (<-b.buffer).EventV1
+	raw := mustJSON(t, buffered)
+	if bytes.Contains(raw, []byte("hunter2")) {
+		t.Fatalf("buffered event contains the original value: %s", raw)
+	}
+	if !slices.Contains(buffered.Erased, "/input/password") {
+		t.Fatalf("expected masking trace, got %v", buffered.Erased)
+	}
+}
+
+// TestPluginNoMaskingOutputUnchanged asserts that with masking disabled the
+// event is byte-for-byte what it was before this feature: no masking, sampling
+// or truncation fields appear.
+func TestPluginNoMaskingOutputUnchanged(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	manager, _ := plugins.New(nil, "test-instance-id", inmem.New())
+
+	backend := &testPlugin{}
+	manager.Register("test_plugin", backend)
+
+	config, err := ParseConfig([]byte(`{"plugin": "test_plugin"}`), nil, []string{"test_plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := New(config, manager)
+
+	input := any(map[string]any{"method": "GET"})
+	result := any(true)
+	ts, err := time.Parse(time.RFC3339Nano, "2018-01-01T12:00:00.123456Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID: "d1",
+		Path:       "authz/allow",
+		Input:      &input,
+		Results:    &result,
+		Timestamp:  ts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const expected = `{"labels":{"id":"test-instance-id","version":"XY.Z"},"decision_id":"d1","path":"authz/allow","input":{"method":"GET"},"result":true,"timestamp":"2018-01-01T12:00:00.123456Z"}`
+	got := string(mustJSON(t, backend.events[0]))
+	if got != expected {
+		t.Fatalf("event output changed:\nwant: %s\ngot:  %s", expected, got)
+	}
+}
+
+// TestPluginDropRecordsNotDuplicatedOnRetry asserts a failed upload that
+// requeues events does not create additional drop records: records are written
+// only when an event is discarded, not when it is retried.
+func TestPluginDropRecordsNotDuplicatedOnRetry(t *testing.T) {
+	ctx := context.Background()
+	store := inmem.New()
+	rawPolicy := []byte(`
+		package system.log
+		import rego.v1
+		mask contains "/input/missing"
+	`)
+	if err := storage.Txn(ctx, store, storage.WriteParams, func(txn storage.Transaction) error {
+		return store.UpsertPolicy(ctx, txn, "test.rego", rawPolicy)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := plugins.New(nil, "test", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{Service: "svc"}
+	trigger := plugins.TriggerManual
+	if err := cfg.validateAndInjectDefaults([]string{"svc"}, nil, &trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Reporting.Trigger = &trigger
+	cfg.Reporting.BufferType = sizeBufferType
+
+	plugin := New(cfg, manager).WithMetrics(metrics.New())
+
+	// The event is dropped by masking before it ever reaches a buffer, so a
+	// later upload (which would retry buffered events) must not add records.
+	input := any(map[string]any{"password": "hunter2"})
+	if err := plugin.Log(ctx, &server.Info{
+		DecisionID: "d1", Path: "authz/allow", Input: &input,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first := plugin.DropRecordsForDecision("d1")
+	if len(first) != 1 {
+		t.Fatalf("expected exactly one drop record, got %v", first)
+	}
+
+	// Simulate repeated retries of the (empty) buffer.
+	for range 3 {
+		_ = plugin.b.Upload(ctx)
+	}
+
+	second := plugin.DropRecordsForDecision("d1")
+	if len(second) != 1 {
+		t.Fatalf("retries must not duplicate drop records, got %v", second)
 	}
 }

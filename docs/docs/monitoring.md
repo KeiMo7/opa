@@ -140,6 +140,11 @@ When Prometheus is enabled in the status plugin (see [Configuration](./configura
 | decision_logs_dropped_buffer_size_limit_bytes_exceeded_total | counter     | Incremented when decisions are dropped because `decision_logs.reporting.buffer_size_limit_bytes` was exceeded.  | STABLE       |
 | decision_logs_encoding_failure_total                         | counter     | Number of decisions dropped because they could not be encoded or did not fit in `upload_size_limit_bytes`.      | STABLE       |
 | decision_logs_nd_builtin_cache_dropped_total                 | counter     | Number of decisions logged without their non-deterministic builtin cache to fit in `upload_size_limit_bytes`.   | STABLE       |
+| decision_logs_masking_failure_total                          | counter     | Number of decisions not logged because the mask policy could not be evaluated.                                 | EXPERIMENTAL |
+| decision_logs_masking_parse_failure_total                    | counter     | Number of decisions dropped because the returned mask rule set could not be parsed.                            | EXPERIMENTAL |
+| decision_logs_masking_undefined_path_dropped_total           | counter     | Number of decisions dropped because a mask rule targeted an undefined path under the `drop` policy.            | EXPERIMENTAL |
+| decision_logs_sampled_total                                  | counter     | Number of decisions replaced by a summary because of `decision_logs.reporting.sample_rate`.                    | EXPERIMENTAL |
+| decision_logs_truncated_total                                | counter     | Number of decisions logged with the `truncated` marker after a part was removed to fit the upload size limit.  | EXPERIMENTAL |
 | enc_log_exceeded_upload_size_limit_bytes_total               | counter     | Number of decisions whose encoded size exceeded `decision_logs.reporting.upload_size_limit_bytes`.              | STABLE       |
 | decision_logs_chunks_uploaded_total                          | counter     | Number of decision log chunks uploaded successfully.                                                            | EXPERIMENTAL |
 | decision_logs_chunks_upload_failed_total                     | counter     | Number of decision log chunk uploads that failed. Failed chunks are requeued and retried.                       | EXPERIMENTAL |

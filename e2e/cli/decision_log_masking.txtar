@@ -1,0 +1,67 @@
+# Verify that masking covers request input and request headers end to end, and
+# that the resulting event records what was removed (without the original
+# values) plus the rule provenance and masking version.
+
+exec $OPA build -o bundles/bundle.tar.gz --bundle policy/
+
+http_server bundles
+
+exec $OPA run --server --addr unix://opa.sock --log-format json --log-level info --config-file config.yaml &opa&
+retry curl -sf --unix-socket opa.sock 'http://localhost/health?bundles'
+
+# The request carries a credential in the body, in the Authorization header,
+# and in a header captured in the decision log.
+exec curl -sf --unix-socket opa.sock -H 'Content-Type: application/json' -H 'Authorization: Bearer header-secret' -d '{"input": {"password": "body-secret", "role": "admin"}}' http://localhost/v1/data/authz/allow
+jq stdout '.result == true'
+
+kill -INT opa
+wait opa
+
+# The logged event erased the input password and the Authorization header.
+jq -s stderr '[.[] | select(.msg == "Decision Log")] | .[0].erased | sort == ["/input/password", "/request_context/http/headers/Authorization"]'
+
+# The event records the rule, its package, a per-policy version and the
+# masking version, but never the original credential values.
+jq -s stderr '[.[] | select(.msg == "Decision Log")] | .[0] | .rule_id == "data.authz.allow" and .rule_package == "data.authz" and (.policy_version | length > 0) and .masking_version == "mask-v1"'
+
+! stdout 'body-secret'
+! stdout 'header-secret'
+
+-- config.yaml --
+services:
+  bundle-server:
+    url: "http://${HTTP_ADDR}"
+bundles:
+  test:
+    service: bundle-server
+    resource: bundle.tar.gz
+    polling:
+      min_delay_seconds: 300
+      max_delay_seconds: 300
+decision_logs:
+  console: true
+  masking:
+    version: mask-v1
+  request_context:
+    http:
+      headers:
+        - Authorization
+
+-- policy/authz.rego --
+package authz
+
+import rego.v1
+
+default allow := false
+
+allow if input.role == "admin"
+
+-- policy/log.rego --
+package system.log
+
+import rego.v1
+
+mask contains "/input/password"
+mask contains "/request_context/http/headers/Authorization"
+
+-- bundles/.gitkeep --

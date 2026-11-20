@@ -96,12 +96,14 @@ _core_specs := [
 	{"pattern": ["decision_logs"], "keys": {
 		"plugin", "service", "partition_name", "reporting", "request_context",
 		"mask_decision", "drop_decision", "console", "resource", "nd_builtin_cache",
+		"masking",
 	}},
 	{"pattern": ["decision_logs", "reporting"], "keys": {
 		"buffer_type", "buffer_size_limit_bytes", "buffer_size_limit_events",
 		"upload_size_limit_bytes", "min_delay_seconds", "max_delay_seconds",
-		"max_decisions_per_second", "trigger",
+		"max_decisions_per_second", "trigger", "sample_rate",
 	}},
+	{"pattern": ["decision_logs", "masking"], "keys": {"undefined_path_policy", "version"}},
 	{"pattern": ["decision_logs", "request_context"], "keys": {"http"}},
 	{"pattern": ["decision_logs", "request_context", "http"], "keys": {"headers"}},
 	{"pattern": ["status"], "keys": {

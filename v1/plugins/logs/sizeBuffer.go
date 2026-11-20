@@ -24,6 +24,7 @@ type sizeBuffer struct {
 	client     rest.Client
 	uploadPath string
 	mode       plugins.TriggerMode
+	onDrop     func(*EventV1, string)
 }
 
 func newSizeBuffer(bufferSizeLimitBytes int64, uploadSizeLimitBytes int64, client rest.Client, uploadPath string, mode plugins.TriggerMode) *sizeBuffer {
@@ -120,6 +121,9 @@ func (b *sizeBuffer) incrMetric(name string) {
 func (b *sizeBuffer) Push(event *EventV1) {
 	if b.limiter != nil && !b.limiter.Allow() {
 		b.incrMetric(logRateLimitExDropCounterName)
+		if b.onDrop != nil {
+			b.onDrop(event, dropReasonRateLimit)
+		}
 		if b.logger != nil {
 			b.logger.Error("Decision log dropped as rate limit exceeded. Reduce reporting interval or increase rate limit.")
 		}
@@ -131,6 +135,9 @@ func (b *sizeBuffer) Push(event *EventV1) {
 		if b.logger != nil {
 			b.logger.Error("Decision log dropped due to error serializing event to JSON with decision ID %v", event.DecisionID)
 		}
+		if b.onDrop != nil {
+			b.onDrop(event, dropReasonEncoding)
+		}
 
 		return
 	}
@@ -139,6 +146,9 @@ func (b *sizeBuffer) Push(event *EventV1) {
 	defer b.mtx.Unlock()
 	result, err := b.enc.Encode(*event, eventBytes)
 	if err != nil {
+		if b.onDrop != nil {
+			b.onDrop(event, dropReasonEncoding)
+		}
 		return
 	}
 
@@ -159,7 +169,7 @@ func (b *sizeBuffer) Push(event *EventV1) {
 				uploadErr = uploadChunk(ctx, b.client, b.uploadPath, chunk, b.metrics)
 				if uploadErr != nil {
 					b.mtx.Lock()
-					b.bufferChunk(b.buffer, chunk)
+					b.bufferChunk(b.buffer, chunk, event)
 					b.mtx.Unlock()
 				}
 			}
@@ -167,7 +177,7 @@ func (b *sizeBuffer) Push(event *EventV1) {
 	default:
 		// periodic and manual triggers upload whatever has been buffered
 		for _, chunk := range result {
-			b.bufferChunk(b.buffer, chunk)
+			b.bufferChunk(b.buffer, chunk, event)
 		}
 	}
 }
@@ -231,13 +241,24 @@ func (b *sizeBuffer) Upload(ctx context.Context) error {
 	return err
 }
 
-func (b *sizeBuffer) bufferChunk(buffer *logBuffer, bs []byte) {
-	dropped := buffer.Push(bs)
-	if dropped > 0 {
+func (b *sizeBuffer) bufferChunk(buffer *logBuffer, bs []byte, ev ...*EventV1) {
+	var event *EventV1
+	if len(ev) > 0 {
+		event = ev[0]
+	}
+	dropped := buffer.PushEvent(bs, event)
+	if len(dropped) > 0 {
 		b.incrMetric(logBufferEventDropCounterName)
 		b.incrMetric(logBufferSizeLimitExDropCounterName)
 		if b.logger != nil {
-			b.logger.Error("Dropped %v chunks from buffer. Reduce reporting interval or increase buffer size.", dropped)
+			b.logger.Error("Dropped %v chunks from buffer. Reduce reporting interval or increase buffer size.", len(dropped))
+		}
+		if b.onDrop != nil {
+			for _, e := range dropped {
+				if e != nil {
+					b.onDrop(e, dropReasonBufferBytes)
+				}
+			}
 		}
 	}
 }

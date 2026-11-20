@@ -11,23 +11,42 @@ const maxEventRetry = 1000
 // PushFIFO pushes data into a buffered channel without blocking when full, making room by dropping the oldest data.
 // An optional metric can be recorded when data is dropped.
 func PushFIFO[T any](buffer chan T, data T, metrics metrics.Metrics, metricName string) {
+	PushFIFOWithDrop(buffer, data, metrics, metricName)
+}
+
+// PushFIFOWithDrop behaves like PushFIFO but reports whether any buffered item
+// had to be dropped to make room for data. It returns true when the incoming
+// item itself could not be enqueued.
+func PushFIFOWithDrop[T any](buffer chan T, data T, metrics metrics.Metrics, metricName string) (dropped bool) {
+	return len(PushFIFOEvict(buffer, data, metrics, metricName)) > 0
+}
+
+// PushFIFOEvict behaves like PushFIFO and returns the buffered items that had
+// to be dropped to make room for data. It lets callers record what was lost
+// without reporting a drop for the item that was enqueued. The returned slice
+// is nil when nothing was evicted.
+func PushFIFOEvict[T any](buffer chan T, data T, metrics metrics.Metrics, metricName string) (evicted []T) {
 	for range maxEventRetry {
 		// non-blocking send to the buffer, to prevent blocking if buffer is full so room can be made.
 		select {
 		case buffer <- data:
-			return
+			return evicted
 		default:
 		}
 
 		// non-blocking drop from the buffer to make room for incoming event
 		select {
-		case <-buffer:
+		case v := <-buffer:
+			evicted = append(evicted, v)
 			if metrics != nil && metricName != "" {
 				metrics.Counter(metricName).Incr()
 			}
 		default:
 		}
 	}
+	// The incoming item could not be enqueued. Report it as evicted so the
+	// caller accounts for it too.
+	return append(evicted, data)
 }
 
 // CollectChan reads all values from a channel and returns them as a slice.

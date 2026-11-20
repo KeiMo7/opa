@@ -349,6 +349,7 @@ func (opa *OPA) Decision(ctx context.Context, options DecisionOptions) (*Decisio
 				record.Results = &result.Result
 			}
 			record.EvaluatedRuleLabels = tracker.Labels
+			record.EvaluatedRule = tracker.PrimaryFallback(record.Path)
 		},
 	)
 	if err != nil {
@@ -465,6 +466,9 @@ func (opa *OPA) Partial(ctx context.Context, options PartialOptions) (*PartialRe
 		Metrics:    options.Metrics,
 		DecisionID: options.DecisionID,
 	}
+	// Partial evaluation does not track rules, but the decision log must still
+	// carry deterministic rule provenance placeholders.
+	record.EvaluatedRule = (&topdown.EvaluatedRuleTracker{}).PrimaryFallback(record.Path)
 
 	var provenance types.ProvenanceV1
 

@@ -6,6 +6,7 @@
 package logs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/open-policy-agent/opa/v1/rego"
 	"github.com/open-policy-agent/opa/v1/server"
 	"github.com/open-policy-agent/opa/v1/storage"
+	"github.com/open-policy-agent/opa/v1/topdown"
 	"github.com/open-policy-agent/opa/v1/util"
 )
 
@@ -63,14 +65,21 @@ type EventV1 struct {
 	NDBuiltinCache      *any                    `json:"nd_builtin_cache,omitempty"`
 	Erased              []string                `json:"erased,omitempty"`
 	Masked              []string                `json:"masked,omitempty"`
+	MaskingVersion      string                  `json:"masking_version,omitempty"`
 	Error               error                   `json:"error,omitempty"`
 	RequestedBy         string                  `json:"requested_by,omitempty"`
 	Timestamp           time.Time               `json:"timestamp"`
 	Metrics             map[string]any          `json:"metrics,omitempty"`
 	RequestID           uint64                  `json:"req_id,omitempty"`
 	RuleLabels          []map[string]any        `json:"rule_labels,omitempty"`
+	RuleID              string                  `json:"rule_id,omitempty"`
+	RulePackage         string                  `json:"rule_package,omitempty"`
+	PolicyVersion       string                  `json:"policy_version,omitempty"`
 	RequestContext      *RequestContext         `json:"request_context,omitempty"`
 	Custom              map[string]any          `json:"custom,omitempty"`
+	Sampled             bool                    `json:"sampled,omitempty"`
+	Truncated           bool                    `json:"truncated,omitempty"`
+	TruncatedParts      []string                `json:"truncated_parts,omitempty"`
 
 	inputAST ast.Value
 }
@@ -206,6 +215,10 @@ func (e *EventV1) AST() (ast.Value, error) {
 		event.Insert(ast.InternedTerm("masked"), ast.ArrayTerm(masked...))
 	}
 
+	if len(e.MaskingVersion) > 0 {
+		event.Insert(ast.InternedTerm("masking_version"), ast.StringTerm(e.MaskingVersion))
+	}
+
 	if e.Error != nil {
 		evalErr, err := roundtripJSONToAST(e.Error)
 		if err != nil {
@@ -223,6 +236,34 @@ func (e *EventV1) AST() (ast.Value, error) {
 		if err == nil {
 			event.Insert(ast.InternedTerm("rule_labels"), ast.NewTerm(v))
 		}
+	}
+
+	if len(e.RuleID) > 0 {
+		event.Insert(ast.InternedTerm("rule_id"), ast.StringTerm(e.RuleID))
+	}
+
+	if len(e.RulePackage) > 0 {
+		event.Insert(ast.InternedTerm("rule_package"), ast.StringTerm(e.RulePackage))
+	}
+
+	if len(e.PolicyVersion) > 0 {
+		event.Insert(ast.InternedTerm("policy_version"), ast.StringTerm(e.PolicyVersion))
+	}
+
+	if e.Sampled {
+		event.Insert(ast.InternedTerm("sampled"), ast.BooleanTerm(true))
+	}
+
+	if e.Truncated {
+		event.Insert(ast.InternedTerm("truncated"), ast.BooleanTerm(true))
+	}
+
+	if len(e.TruncatedParts) > 0 {
+		parts := make([]*ast.Term, len(e.TruncatedParts))
+		for i, v := range e.TruncatedParts {
+			parts[i] = ast.StringTerm(v)
+		}
+		event.Insert(ast.InternedTerm("truncated_parts"), ast.ArrayTerm(parts...))
 	}
 
 	// Use the timestamp JSON marshaller to ensure the format is the same as
@@ -311,6 +352,11 @@ const (
 	logEncodingFailureCounterName       = "decision_logs_encoding_failure"
 	logChunkUploadedCounterName         = "decision_logs_chunks_uploaded"
 	logChunkUploadFailedCounterName     = "decision_logs_chunks_upload_failed"
+	logMaskFailureCounterName           = "decision_logs_masking_failure"
+	logMaskParseFailureCounterName      = "decision_logs_masking_parse_failure"
+	logMaskUndefinedDropCounterName     = "decision_logs_masking_undefined_path_dropped"
+	logSampledCounterName               = "decision_logs_sampled"
+	logTruncatedCounterName             = "decision_logs_truncated"
 	defaultResourcePath                 = "/logs"
 	sizeBufferType                      = "size"
 	eventBufferType                     = "event"
@@ -326,6 +372,10 @@ type ReportingConfig struct {
 	MaxDelaySeconds       *int64               `json:"max_delay_seconds,omitempty"`        // max amount of time to wait between poll attempts
 	MaxDecisionsPerSecond *float64             `json:"max_decisions_per_second,omitempty"` // max number of decision logs to buffer per second
 	Trigger               *plugins.TriggerMode `json:"trigger,omitempty"`                  // trigger mode
+	// SampleRate optionally keeps only a fraction of decision events. A
+	// sampled-out event is replaced by a summary event carrying its decision
+	// ID, result and rule provenance. Values in (0,1]; 1 (or unset) keeps all.
+	SampleRate *float64 `json:"sample_rate,omitempty"`
 }
 
 type RequestContextConfig struct {
@@ -348,8 +398,21 @@ type Config struct {
 	ConsoleLogs     bool                 `json:"console"`
 	Resource        *string              `json:"resource"`
 	NDBuiltinCache  bool                 `json:"nd_builtin_cache,omitempty"`
+	Masking         MaskingConfig        `json:"masking,omitempty"`
 	maskDecisionRef ast.Ref
 	dropDecisionRef ast.Ref
+}
+
+// MaskingConfig controls how mask rule failures are handled.
+type MaskingConfig struct {
+	// UndefinedPathPolicy decides what happens when a mask rule targets a
+	// path that does not exist or has an incompatible type. Valid values are
+	// "drop" (default) and "clear".
+	UndefinedPathPolicy string `json:"undefined_path_policy,omitempty"`
+	// Version is an operator supplied label for the active mask rules. It is
+	// recorded on each masked event. When empty, a digest of the effective
+	// rules is used instead.
+	Version string `json:"version,omitempty"`
 }
 
 func (c *Config) validateAndInjectDefaults(services []string, pluginsList []string, trigger *plugins.TriggerMode, l logging.Logger) error {
@@ -484,6 +547,21 @@ func (c *Config) validateAndInjectDefaults(services []string, pluginsList []stri
 		return fmt.Errorf("invalid drop_decision in decision_logs: %w", err)
 	}
 
+	switch c.Masking.UndefinedPathPolicy {
+	case "", maskUndefinedDrop:
+		c.Masking.UndefinedPathPolicy = maskUndefinedDrop
+	case maskUndefinedClear:
+	default:
+		return fmt.Errorf("invalid masking.undefined_path_policy %q, expected %q or %q",
+			c.Masking.UndefinedPathPolicy, maskUndefinedDrop, maskUndefinedClear)
+	}
+
+	if c.Reporting.SampleRate != nil {
+		if *c.Reporting.SampleRate <= 0 || *c.Reporting.SampleRate > 1 {
+			return fmt.Errorf("invalid reporting.sample_rate %v, expected a value in (0, 1]", *c.Reporting.SampleRate)
+		}
+	}
+
 	if c.PartitionName != "" {
 		resourcePath := fmt.Sprintf("/logs/%v", c.PartitionName)
 		c.Resource = &resourcePath
@@ -525,6 +603,7 @@ type Plugin struct {
 	metrics       metrics.Metrics
 	logger        logging.Logger
 	status        *lstat.Status
+	drops         *dropRecorder
 	cachedSlogger *slog.Logger
 	sloggerMtx    sync.RWMutex
 }
@@ -668,6 +747,7 @@ func New(parsedConfig *Config, manager *plugins.Manager) *Plugin {
 		reconfig: make(chan reconfigure),
 		logger:   manager.Logger().WithFields(map[string]any{"plugin": Name}),
 		status:   &lstat.Status{},
+		drops:    newDropRecorder(defaultDropRecordLimit, manager.Logger().WithFields(map[string]any{"plugin": Name})),
 	}
 
 	switch parsedConfig.Reporting.BufferType {
@@ -679,6 +759,8 @@ func New(parsedConfig *Config, manager *plugins.Manager) *Plugin {
 			*parsedConfig.Resource,
 			*parsedConfig.Reporting.Trigger,
 		).WithLogger(plugin.logger).WithLimiter(parsedConfig.Reporting.MaxDecisionsPerSecond)
+		plugin.b.(*eventBuffer).onDrop = plugin.dropCallback()
+		plugin.b.(*eventBuffer).enc.onDrop = plugin.encoderDropCallback()
 	case sizeBufferType:
 		plugin.b = newSizeBuffer(
 			*parsedConfig.Reporting.BufferSizeLimitBytes,
@@ -687,6 +769,8 @@ func New(parsedConfig *Config, manager *plugins.Manager) *Plugin {
 			*parsedConfig.Resource,
 			*parsedConfig.Reporting.Trigger,
 		).WithLogger(plugin.logger).WithLimiter(parsedConfig.Reporting.MaxDecisionsPerSecond)
+		plugin.b.(*sizeBuffer).onDrop = plugin.dropCallback()
+		plugin.b.(*sizeBuffer).enc.onDrop = plugin.encoderDropCallback()
 	}
 
 	manager.RegisterCompilerTrigger(plugin.compilerUpdated)
@@ -838,6 +922,17 @@ func (p *Plugin) Log(ctx context.Context, decision *server.Info) error {
 		event.Error = decision.Error
 	}
 
+	// Record which rule, package and per-policy version determined the
+	// decision. Decisions produced by the server and SDK always carry this
+	// (with deterministic placeholders when nothing was tracked). Callers that
+	// construct events directly and leave it unset keep the historical event
+	// shape, so their output is unchanged.
+	if rule := decision.EvaluatedRule; rule != (topdown.EvaluatedRule{}) {
+		event.RuleID = cmp.Or(rule.ID, topdown.UnknownRuleID)
+		event.RulePackage = cmp.Or(rule.Package, topdown.UnknownRulePackage)
+		event.PolicyVersion = cmp.Or(rule.Version, topdown.UnversionedPolicyVersion)
+	}
+
 	input, err := event.AST()
 	if err != nil {
 		return err
@@ -854,9 +949,27 @@ func (p *Plugin) Log(ctx context.Context, decision *server.Info) error {
 		return nil
 	}
 
-	if err := p.maskEvent(ctx, decision.Txn, input, &event); err != nil {
+	dropped, err := p.maskEvent(ctx, decision.Txn, input, &event)
+	if err != nil {
+		// A mask evaluation failure means the event may still carry raw
+		// values. It must not be persisted; count it instead.
+		p.incrMetric(logMaskFailureCounterName)
+		p.recordDrop(event, dropReasonMaskFailure)
 		p.logger.Error("Log event masking failed: %v.", err)
 		return nil
+	}
+	if dropped {
+		// The mask policy could not be applied and the selected policy is to
+		// drop the event rather than persist it unmasked.
+		return nil
+	}
+
+	// Sampling happens after masking so that a retained summary never carries
+	// values the mask policy removed. Sampled-out events keep just enough to
+	// correlate them: decision ID, result and rule provenance.
+	if sampled, ok := p.sampleEvent(event); ok {
+		p.incrMetric(logSampledCounterName)
+		event = sampled
 	}
 
 	if p.config.ConsoleLogs {
@@ -889,6 +1002,33 @@ func (p *Plugin) Log(ctx context.Context, decision *server.Info) error {
 	}
 
 	return nil
+}
+
+// sampleEvent applies the configured sample rate. It returns the summary event
+// and true when the event is sampled out. The summary deliberately keeps only
+// the identifiers needed to correlate it with the full decision: decision ID,
+// result, rule provenance and timestamp. It never carries input, headers or
+// other values the mask policy may have removed.
+func (p *Plugin) sampleEvent(event EventV1) (EventV1, bool) {
+	rate := p.config.Reporting.SampleRate
+	if rate == nil || *rate >= 1 {
+		return event, false
+	}
+	if rand.Float64() < *rate {
+		return event, false
+	}
+
+	return EventV1{
+		DecisionID:    event.DecisionID,
+		Path:          event.Path,
+		Query:         event.Query,
+		Result:        event.Result,
+		RuleID:        event.RuleID,
+		RulePackage:   event.RulePackage,
+		PolicyVersion: event.PolicyVersion,
+		Timestamp:     event.Timestamp,
+		Sampled:       true,
+	}, true
 }
 
 func (p *Plugin) getSlogLogger(l plugins.LoggerPlugin) (*slog.Logger, error) {
@@ -1093,6 +1233,8 @@ func (p *Plugin) reconfigure(ctx context.Context, config any) {
 			*p.config.Resource,
 			*p.config.Reporting.Trigger,
 		).WithLogger(p.logger).WithLimiter(p.config.Reporting.MaxDecisionsPerSecond)
+		p.b.(*eventBuffer).onDrop = p.dropCallback()
+		p.b.(*eventBuffer).enc.onDrop = p.encoderDropCallback()
 	case sizeBufferType:
 		p.b = newSizeBuffer(
 			*p.config.Reporting.BufferSizeLimitBytes,
@@ -1101,6 +1243,8 @@ func (p *Plugin) reconfigure(ctx context.Context, config any) {
 			*p.config.Resource,
 			*p.config.Reporting.Trigger,
 		).WithLogger(p.logger).WithLimiter(p.config.Reporting.MaxDecisionsPerSecond)
+		p.b.(*sizeBuffer).onDrop = p.dropCallback()
+		p.b.(*sizeBuffer).enc.onDrop = p.encoderDropCallback()
 	}
 	p.b.WithMetrics(p.metrics)
 
@@ -1117,7 +1261,49 @@ func (p *Plugin) push(event EventV1) {
 	p.b.Push(&event)
 }
 
-func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, input ast.Value, event *EventV1) error {
+func (p *Plugin) incrMetric(name string) {
+	if p.metrics != nil {
+		p.metrics.Counter(name).Incr()
+	}
+}
+
+// recordDrop stores a searchable drop record for an event that will not be
+// persisted. It intentionally keeps only identifiers, never event values.
+func (p *Plugin) recordDrop(event EventV1, reason string) {
+	if p.drops == nil {
+		return
+	}
+	p.drops.record(DropRecord{
+		DecisionID:    event.DecisionID,
+		Reason:        reason,
+		Time:          time.Now().UTC(),
+		RuleID:        event.RuleID,
+		PolicyVersion: event.PolicyVersion,
+	})
+}
+
+// dropCallback adapts recording for buffers, which only have an event pointer.
+func (p *Plugin) dropCallback() func(*EventV1, string) {
+	return func(event *EventV1, reason string) {
+		if event == nil {
+			return
+		}
+		p.recordDrop(*event, reason)
+	}
+}
+
+// encoderDropCallback records events discarded by the chunk encoder.
+func (p *Plugin) encoderDropCallback() func(EventV1) {
+	return func(event EventV1) {
+		p.recordDrop(event, dropReasonEncoding)
+	}
+}
+
+// maskEvent applies the configured mask policy to event. It returns true when
+// the event must be dropped because a mask rule could not be applied while the
+// drop policy is in effect, or because the rule set could not be parsed (the
+// conservative mode required to avoid persisting unmasked values).
+func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, input ast.Value, event *EventV1) (dropped bool, err error) {
 	pq, err := p.preparedMask.prepare(func() (*rego.PreparedEvalQuery, error) {
 		var pq rego.PreparedEvalQuery
 
@@ -1141,7 +1327,7 @@ func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, input a
 	})
 
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	rs, err := pq.Eval(
@@ -1151,9 +1337,9 @@ func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, input a
 	)
 
 	if err != nil {
-		return err
+		return false, err
 	} else if len(rs) == 0 {
-		return nil
+		return false, nil
 	}
 
 	mRuleSet, err := newMaskRuleSet(
@@ -1163,12 +1349,37 @@ func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, input a
 		},
 	)
 	if err != nil {
-		return err
+		// A rule set that cannot be parsed cannot be trusted to have removed
+		// sensitive data. Drop the event rather than persist it unmasked.
+		p.incrMetric(logMaskParseFailureCounterName)
+		p.recordDrop(*event, dropReasonMaskParse)
+		return true, nil
 	}
 
-	mRuleSet.Mask(event)
+	mRuleSet.UndefinedPolicy = p.config.Masking.UndefinedPathPolicy
+	mRuleSet.MaskVersion = p.maskingVersion(mRuleSet)
 
-	return nil
+	if mRuleSet.Mask(event) {
+		p.incrMetric(logMaskUndefinedDropCounterName)
+		p.recordDrop(*event, dropReasonMaskUndefined)
+		return true, nil
+	}
+
+	if len(mRuleSet.Rules) > 0 {
+		event.MaskingVersion = mRuleSet.MaskVersion
+	}
+
+	return false, nil
+}
+
+// maskingVersion returns the version recorded on masked events. An operator
+// supplied version takes precedence; otherwise a digest of the effective
+// rules is used so that events can always be tied to masking semantics.
+func (p *Plugin) maskingVersion(rs *maskRuleSet) string {
+	if p.config.Masking.Version != "" {
+		return p.config.Masking.Version
+	}
+	return rs.Digest()
 }
 
 func (p *Plugin) dropEvent(ctx context.Context, txn storage.Transaction, input ast.Value) (bool, error) {
@@ -1303,6 +1514,7 @@ func eventToAttrs(event EventV1) []slog.Attr {
 	addAttrIfNotNil(&attrs, "nd_builtin_cache", event.NDBuiltinCache)
 	addAttrIfSliceNotEmpty(&attrs, "erased", event.Erased)
 	addAttrIfSliceNotEmpty(&attrs, "masked", event.Masked)
+	addAttrIfNonZeroString(&attrs, "masking_version", event.MaskingVersion)
 
 	if event.Error != nil {
 		attrs = append(attrs, slog.String("error", event.Error.Error()))
@@ -1317,6 +1529,12 @@ func eventToAttrs(event EventV1) []slog.Attr {
 	}
 
 	addAttrIfSliceNotEmpty(&attrs, "rule_labels", event.RuleLabels)
+	addAttrIfNonZeroString(&attrs, "rule_id", event.RuleID)
+	addAttrIfNonZeroString(&attrs, "rule_package", event.RulePackage)
+	addAttrIfNonZeroString(&attrs, "policy_version", event.PolicyVersion)
+	addAttrIfNonZero(&attrs, "sampled", event.Sampled)
+	addAttrIfNonZero(&attrs, "truncated", event.Truncated)
+	addAttrIfSliceNotEmpty(&attrs, "truncated_parts", event.TruncatedParts)
 	addAttrIfHasLen(&attrs, "custom", event.Custom)
 
 	return attrs
@@ -1414,6 +1632,7 @@ func eventToFields(event EventV1) map[string]any {
 	}
 	addIfSliceNotEmpty(fields, "erased", util.ToSliceOf[any](event.Erased))
 	addIfSliceNotEmpty(fields, "masked", util.ToSliceOf[any](event.Masked))
+	addIfNonZero(fields, "masking_version", event.MaskingVersion)
 
 	if event.Error != nil {
 		fields["error"] = event.Error.Error()
@@ -1438,6 +1657,16 @@ func eventToFields(event EventV1) map[string]any {
 			fields["rule_labels"] = v
 		}
 	}
+	addIfNonZero(fields, "rule_id", event.RuleID)
+	addIfNonZero(fields, "rule_package", event.RulePackage)
+	addIfNonZero(fields, "policy_version", event.PolicyVersion)
+	if event.Sampled {
+		fields["sampled"] = true
+	}
+	if event.Truncated {
+		fields["truncated"] = true
+	}
+	addIfSliceNotEmpty(fields, "truncated_parts", util.ToSliceOf[any](event.TruncatedParts))
 
 	if len(event.Custom) > 0 {
 		var v any = event.Custom

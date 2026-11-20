@@ -229,13 +229,13 @@ func TestEventBuffer_Upload(t *testing.T) {
 			mode:                 plugins.TriggerPeriodic,
 			eventLimit:           4,
 			numberOfEvents:       4,
-			uploadSizeLimitBytes: 196, // Each test event is 195 bytes
+			uploadSizeLimitBytes: 260, // Each test event is 195 bytes; truncation markers add ~56
 			handleFunc: func(w http.ResponseWriter, r *http.Request) {
 				// No. of events that fit in a chunk depends on how gzip packs
 				// them, which varies between Go versions. So here we confirm
 				// the len and that we get at least one event.
-				if r.ContentLength > 196 {
-					t.Errorf("uploaded chunk of %d bytes exceeds the limit of 196", r.ContentLength)
+				if r.ContentLength > 260 {
+					t.Errorf("uploaded chunk of %d bytes exceeds the limit of 260", r.ContentLength)
 				}
 				events := decodeLogEvent(t, r.Body)
 				if len(events) == 0 {

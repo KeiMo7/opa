@@ -38,6 +38,7 @@ type eventBuffer struct {
 	mode         plugins.TriggerMode
 	stop         chan chan struct{}
 	cancelUpload bool
+	onDrop       func(*EventV1, string)
 }
 
 func newEventBuffer(bufferSizeLimitEvents int64, uploadSizeLimitBytes int64, client rest.Client, uploadPath string, mode plugins.TriggerMode) *eventBuffer {
@@ -168,13 +169,23 @@ func (b *eventBuffer) Push(event *EventV1) {
 func (b *eventBuffer) push(event *bufferItem) {
 	if b.limiter != nil && !b.limiter.Allow() {
 		b.incrMetric(logRateLimitExDropCounterName)
+		if b.onDrop != nil && event.EventV1 != nil {
+			b.onDrop(event.EventV1, dropReasonRateLimit)
+		}
 		if b.logger != nil {
 			b.logger.Error("Decision log dropped as rate limit exceeded. Reduce reporting interval or increase rate limit.")
 		}
 		return
 	}
 
-	channel.PushFIFO(b.buffer, event, b.metrics, logBufferEventDropCounterName)
+	evicted := channel.PushFIFOEvict(b.buffer, event, b.metrics, logBufferEventDropCounterName)
+	if b.onDrop != nil {
+		for _, e := range evicted {
+			if e.EventV1 != nil {
+				b.onDrop(e.EventV1, dropReasonBufferSize)
+			}
+		}
+	}
 }
 
 func (b *eventBuffer) processBufferItem(item *bufferItem) [][]byte {

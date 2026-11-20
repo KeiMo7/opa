@@ -5,6 +5,8 @@
 package logs
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -24,10 +26,26 @@ const (
 	partInput    = "input"
 	partResult   = "result"
 	partNDBCache = "nd_builtin_cache"
+	// Additional parts that can carry original values and are therefore
+	// maskable. They mirror the corresponding EventV1 fields.
+	partIntermediateResults = "intermediate_results"
+	partMappedResult        = "mapped_result"
+	partRequestContext      = "request_context"
+	partError               = "error"
+	partCustom              = "custom"
+
+	// maskUndefinedDrop drops events when a mask rule targets a path that
+	// cannot be applied. maskUndefinedClear instead replaces the targeted part
+	// with an empty conservative value.
+	maskUndefinedDrop  = "drop"
+	maskUndefinedClear = "clear"
+
+	defaultMaskUndefinedPolicy = maskUndefinedDrop
 )
 
 var errMaskInvalidObject = errors.New("mask upsert invalid object")
 
+// maskRule is a single erase/upsert operation targeting one event part.
 type maskRule struct {
 	OP                maskOP `json:"op"`
 	Path              string `json:"path"`
@@ -37,10 +55,23 @@ type maskRule struct {
 	failUndefinedPath bool
 }
 
+// part returns the top-level event part this rule applies to.
+func (r maskRule) part() string {
+	return r.escapedParts[0]
+}
+
 type maskRuleSet struct {
 	OnRuleError  func(*maskRule, error)
 	Rules        []*maskRule
 	resultCopied bool
+	// otherCopied tracks which non-result parts have been deep copied so a
+	// mask never mutates data still referenced by the evaluation result.
+	copied map[string]bool
+	// UndefinedPolicy selects what happens when a rule cannot be applied.
+	UndefinedPolicy string
+	// MaskVersion is the effective version of the mask rule set, recorded on
+	// the events it masked.
+	MaskVersion string
 }
 
 func (r maskRule) String() string {
@@ -64,7 +95,9 @@ func newMaskRule(path string, opts ...maskRuleOption) (*maskRule, error) {
 	parts := strings.Split(path[1:], "/")
 
 	switch parts[0] {
-	case partInput, partResult, partNDBCache: // OK
+	case partInput, partResult, partNDBCache,
+		partIntermediateResults, partMappedResult,
+		partRequestContext, partError, partCustom: // OK
 	default:
 		return nil, fmt.Errorf("mask prefix not allowed: %v", parts[0])
 	}
@@ -125,83 +158,278 @@ func withFailUndefinedPath() maskRuleOption {
 	}
 }
 
+// Mask applies the rule to event. An error is returned when the rule requests
+// failures on undefined paths. Undefined targets are otherwise ignored, which
+// preserves the historical behavior for callers that apply a single rule.
 func (r maskRule) Mask(event *EventV1) error {
+	_, err := r.Apply(event)
+	return err
+}
+
+// Apply applies the rule to event. An error is only returned for structurally
+// invalid rules.
+func (r maskRule) Apply(event *EventV1) (undefined bool, err error) {
 	var maskObj *any     // pointer to event Input|Result|NDBCache object
 	var maskObjPtr **any // pointer to the event Input|Result|NDBCache pointer itself
 
-	switch p := r.escapedParts[0]; p {
+	switch r.part() {
 	case partInput:
 		if event.Input == nil {
-			if r.failUndefinedPath {
-				return errMaskInvalidObject
-			}
-			return nil
+			return r.undefinedOnMissing()
 		}
 		maskObj = event.Input
 		maskObjPtr = &event.Input
 	case partResult:
 		if event.Result == nil {
-			if r.failUndefinedPath {
-				return errMaskInvalidObject
-			}
-			return nil
+			return r.undefinedOnMissing()
 		}
 		maskObj = event.Result
 		maskObjPtr = &event.Result
 	case partNDBCache:
 		if event.NDBuiltinCache == nil {
-			if r.failUndefinedPath {
-				return errMaskInvalidObject
-			}
-			return nil
+			return r.undefinedOnMissing()
 		}
 		maskObj = event.NDBuiltinCache
 		maskObjPtr = &event.NDBuiltinCache
+	case partIntermediateResults:
+		if event.IntermediateResults == nil {
+			return r.undefinedOnMissing()
+		}
+		var obj any = event.IntermediateResults
+		maskObj = &obj
+		maskObjPtr = nil
+	case partMappedResult:
+		if event.MappedResult == nil {
+			return r.undefinedOnMissing()
+		}
+		maskObj = event.MappedResult
+		maskObjPtr = &event.MappedResult
+	case partCustom:
+		if event.Custom == nil {
+			return r.undefinedOnMissing()
+		}
+		// Custom is a map, which is assignable to any without a copy.
+		var obj any = event.Custom
+		maskObj = &obj
+		maskObjPtr = nil
+	case partRequestContext:
+		return r.maskRequestContext(event)
+	case partError:
+		return r.maskError(event)
 	default:
-		return fmt.Errorf("illegal path value: %s", p)
+		return false, fmt.Errorf("illegal path value: %s", r.part())
 	}
 
 	switch r.OP {
 	case maskOPRemove:
 		if r.modifyFullObj {
-			*maskObjPtr = nil
+			switch r.part() {
+			case partIntermediateResults:
+				event.IntermediateResults = nil
+			case partCustom:
+				event.Custom = nil
+			default:
+				*maskObjPtr = nil
+			}
 		} else {
-			err := r.removeValue(r.escapedParts[1:], maskObj)
-			if err != nil {
-				if err == errMaskInvalidObject && r.failUndefinedPath {
-					return err
+			if err := r.removeValue(r.escapedParts[1:], maskObj); err != nil {
+				if err == errMaskInvalidObject {
+					return r.undefinedOnMissing()
 				}
-				return nil
+				return false, nil
 			}
 		}
 
 		event.Erased = append(event.Erased, r.String())
 	case maskOPUpsert:
 		if r.modifyFullObj {
-			*maskObjPtr = &r.Value
+			switch r.part() {
+			case partIntermediateResults:
+				if m, ok := r.Value.(map[string]any); ok {
+					event.IntermediateResults = m
+				} else {
+					return r.undefinedOnMissing()
+				}
+			case partCustom:
+				if m, ok := r.Value.(map[string]any); ok {
+					event.Custom = m
+				} else {
+					return r.undefinedOnMissing()
+				}
+			default:
+				*maskObjPtr = &r.Value
+			}
 		} else {
 			// A document rooted at an array is addressable too, so dispatch on both
 			// container kinds. mkdirp already handles each.
 			switch obj := (*maskObj).(type) {
 			case map[string]any, []any:
 				if err := r.mkdirp(obj, r.escapedParts[1:len(r.escapedParts)], r.Value); err != nil {
-					if r.failUndefinedPath {
-						return err
-					}
-
-					return nil
+					return r.undefinedOnMissing()
 				}
 			default:
-				return nil
+				return r.undefinedOnMissing()
 			}
 		}
 
 		event.Masked = append(event.Masked, r.String())
 	default:
-		return fmt.Errorf("illegal mask op value: %s", r.OP)
+		return false, fmt.Errorf("illegal mask op value: %s", r.OP)
 	}
 
-	return nil
+	return false, nil
+}
+
+// undefinedOnMissing reports the outcome of a rule that could not be applied.
+// When the rule set explicitly requested failures for undefined paths, the
+// legacy error is returned so that callers can surface it. Otherwise the miss
+// is reported as undefined and the rule set's policy decides what to do.
+func (r maskRule) undefinedOnMissing() (bool, error) {
+	if r.failUndefinedPath {
+		return false, errMaskInvalidObject
+	}
+	return true, nil
+}
+
+// maskRequestContext supports paths under /request_context. The only
+// maskable subtree is the selected HTTP request headers object.
+func (r maskRule) maskRequestContext(event *EventV1) (bool, error) {
+	if event.RequestContext == nil || event.RequestContext.HTTPRequest == nil {
+		return r.undefinedOnMissing()
+	}
+
+	headers := event.RequestContext.HTTPRequest.Headers
+	if headers == nil {
+		return r.undefinedOnMissing()
+	}
+
+	// Paths are /request_context/http/headers[/<name>...]
+	rest := r.escapedParts[1:]
+	if len(rest) == 0 {
+		switch r.OP {
+		case maskOPRemove:
+			event.RequestContext = nil
+			event.Erased = append(event.Erased, r.String())
+		case maskOPUpsert:
+			return false, fmt.Errorf("mask upsert not supported at %s", r.String())
+		}
+		return false, nil
+	}
+
+	if len(rest) < 2 || rest[0] != "http" || rest[1] != "headers" {
+		return r.undefinedOnMissing()
+	}
+
+	// Normalize the headers map to the addressable shape used by the mask
+	// engine. HTTP header names are case-insensitive, so resolve the target
+	// name against the stored casing before stripping it to a single key.
+	var node any = map[string]any{}
+	nodeMap := node.(map[string]any)
+	for name, values := range headers {
+		vals := make([]any, len(values))
+		for i := range values {
+			vals[i] = values[i]
+		}
+		nodeMap[name] = vals
+	}
+
+	// Rewrite the part that addresses the header name to the stored casing, so
+	// that a mask rule using a different casing still matches. Header names
+	// are matched by http.CanonicalHeaderKey semantics.
+	target := r.escapedParts[3:]
+	if len(target) > 0 {
+		if stored, ok := resolveHeaderName(nodeMap, target[0]); ok {
+			target = append([]string{stored}, target[1:]...)
+		}
+	}
+	switch r.OP {
+	case maskOPRemove:
+		if len(target) == 0 {
+			event.RequestContext.HTTPRequest.Headers = nil
+			event.Erased = append(event.Erased, r.String())
+			return false, nil
+		}
+		if err := r.removeValue(target, &node); err != nil {
+			if err == errMaskInvalidObject {
+				return r.undefinedOnMissing()
+			}
+			return false, nil
+		}
+		event.Erased = append(event.Erased, r.String())
+	case maskOPUpsert:
+		if len(target) == 0 {
+			return false, fmt.Errorf("mask upsert not supported at %s", r.String())
+		}
+		if err := r.mkdirp(node, target, r.Value); err != nil {
+			return r.undefinedOnMissing()
+		}
+		event.Masked = append(event.Masked, r.String())
+	default:
+		return false, fmt.Errorf("illegal mask op value: %s", r.OP)
+	}
+
+	if nodeMap, ok := node.(map[string]any); ok {
+		event.RequestContext.HTTPRequest.Headers = headersFromMask(nodeMap)
+	}
+
+	return false, nil
+}
+
+func headersFromMask(node map[string]any) map[string][]string {
+	out := make(map[string][]string, len(node))
+	for name, v := range node {
+		switch vals := v.(type) {
+		case []any:
+			ss := make([]string, 0, len(vals))
+			for _, s := range vals {
+				if str, ok := s.(string); ok {
+					ss = append(ss, str)
+				}
+			}
+			out[name] = ss
+		case string:
+			out[name] = []string{vals}
+		}
+	}
+	return out
+}
+
+// resolveHeaderName returns the stored key matching name case-insensitively.
+func resolveHeaderName(node map[string]any, name string) (string, bool) {
+	if _, ok := node[name]; ok {
+		return name, true
+	}
+	for stored := range node {
+		if strings.EqualFold(stored, name) {
+			return stored, true
+		}
+	}
+	return "", false
+}
+
+func (r maskRule) maskError(event *EventV1) (bool, error) {
+	if event.Error == nil {
+		return r.undefinedOnMissing()
+	}
+
+	// Only whole-error operations are supported: error text is opaque and
+	// not addressable by JSON Pointer.
+	if !r.modifyFullObj {
+		return r.undefinedOnMissing()
+	}
+
+	switch r.OP {
+	case maskOPRemove:
+		event.Error = nil
+		event.Erased = append(event.Erased, r.String())
+	case maskOPUpsert:
+		event.Error = fmt.Errorf("%v", r.Value)
+		event.Masked = append(event.Masked, r.String())
+	default:
+		return false, fmt.Errorf("illegal mask op value: %s", r.OP)
+	}
+
+	return false, nil
 }
 
 func (maskRule) removeValue(p []string, nodePtr *any) error {
@@ -344,7 +572,8 @@ func (maskRule) mkdirp(node any, path []string, value any) error {
 
 func newMaskRuleSet(rv any, onRuleError func(*maskRule, error)) (*maskRuleSet, error) {
 	mRuleSet := &maskRuleSet{
-		OnRuleError: onRuleError,
+		OnRuleError:     onRuleError,
+		UndefinedPolicy: defaultMaskUndefinedPolicy,
 	}
 	rawRules, ok := rv.([]any)
 	if !ok {
@@ -400,20 +629,132 @@ func newMaskRuleSet(rv any, onRuleError func(*maskRule, error)) (*maskRuleSet, e
 	return mRuleSet, nil
 }
 
-func (rs maskRuleSet) Mask(event *EventV1) {
+// Mask applies all rules to event and returns whether the event must be
+// dropped because a rule could not be applied while the drop policy is in
+// effect. When clear policy is selected, the affected part is cleared instead.
+func (rs *maskRuleSet) Mask(event *EventV1) (drop bool) {
 	for _, mRule := range rs.Rules {
 		// result must be deep copied if there are any mask rules
 		// targeting it, to avoid modifying the result sent
 		// to the consumer
-		if mRule.escapedParts[0] == partResult && event.Result != nil && !rs.resultCopied {
+		if mRule.part() == partResult && event.Result != nil && !rs.resultCopied {
 			resultCopy := deepcopy.DeepCopy(*event.Result)
 			event.Result = &resultCopy
 			rs.resultCopied = true
 		}
-		err := mRule.Mask(event)
-		if err != nil {
-			rs.OnRuleError(mRule, err)
+		if err := rs.copyOnWrite(mRule.part(), event); err != nil {
+			if rs.OnRuleError != nil {
+				rs.OnRuleError(mRule, err)
+			}
+			continue
 		}
+
+		undefined, err := mRule.Apply(event)
+		if err != nil {
+			if rs.OnRuleError != nil {
+				rs.OnRuleError(mRule, err)
+			}
+			continue
+		}
+
+		if undefined {
+			switch rs.UndefinedPolicy {
+			case maskUndefinedClear:
+				rs.clearPart(mRule.part(), event)
+				// Clearing removes values from the event, so leave the same
+				// audit trace as an explicit erase.
+				event.Erased = append(event.Erased, mRule.String())
+			case maskUndefinedDrop:
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Digest returns a stable digest of the effective mask rules. It is used to
+// record which masking semantics were applied to an event.
+func (rs *maskRuleSet) Digest() string {
+	h := sha256.New()
+	for _, r := range rs.Rules {
+		h.Write([]byte(r.OP))
+		h.Write([]byte{0})
+		h.Write([]byte(r.String()))
+		h.Write([]byte{0})
+		fmt.Fprintf(h, "%v", r.Value)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// copyOnWrite ensures a mask rule never mutates a part still referenced by the
+// evaluation result. Input, result and the ND cache are owned by the decision
+// log path, so they are not copied here; intermediate and mapped results may
+// alias user data.
+func (rs *maskRuleSet) copyOnWrite(root string, event *EventV1) error {
+	switch root {
+	case partIntermediateResults:
+		if event.IntermediateResults != nil {
+			if rs.copied == nil {
+				rs.copied = map[string]bool{}
+			}
+			if !rs.copied[root] {
+				if m, ok := deepcopy.DeepCopy(event.IntermediateResults).(map[string]any); ok {
+					event.IntermediateResults = m
+				}
+				rs.copied[root] = true
+			}
+		}
+	case partMappedResult:
+		if event.MappedResult != nil {
+			if rs.copied == nil {
+				rs.copied = map[string]bool{}
+			}
+			if !rs.copied[root] {
+				v := deepcopy.DeepCopy(*event.MappedResult)
+				event.MappedResult = &v
+				rs.copied[root] = true
+			}
+		}
+	}
+	return nil
+}
+
+// clearPart conservatively empties the part a mask rule named when the rule
+// could not be applied and the clear policy is selected.
+func (rs *maskRuleSet) clearPart(root string, event *EventV1) {
+	switch root {
+	case partInput:
+		if event.Input != nil {
+			v := any(map[string]any{})
+			event.Input = &v
+		}
+	case partResult:
+		if event.Result != nil {
+			v := any(map[string]any{})
+			event.Result = &v
+		}
+	case partNDBCache:
+		if event.NDBuiltinCache != nil {
+			v := any(map[string]any{})
+			event.NDBuiltinCache = &v
+		}
+	case partIntermediateResults:
+		event.IntermediateResults = map[string]any{}
+	case partMappedResult:
+		if event.MappedResult != nil {
+			v := any(map[string]any{})
+			event.MappedResult = &v
+		}
+	case partRequestContext:
+		if event.RequestContext != nil && event.RequestContext.HTTPRequest != nil {
+			event.RequestContext.HTTPRequest.Headers = nil
+		}
+	case partError:
+		event.Error = nil
+	case partCustom:
+		event.Custom = nil
 	}
 }
 

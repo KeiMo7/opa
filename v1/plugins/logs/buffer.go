@@ -19,6 +19,9 @@ type logBuffer struct {
 
 type logBufferElem struct {
 	bs []byte
+	// ev optionally identifies the events contained in bs, so that a dropped
+	// chunk can be recorded against the decisions it carried.
+	ev *EventV1
 }
 
 func newLogBuffer(limit int64) *logBuffer {
@@ -30,11 +33,17 @@ func newLogBuffer(limit int64) *logBuffer {
 }
 
 func (lb *logBuffer) Push(bs []byte) (dropped int) {
+	return len(lb.PushEvent(bs, nil))
+}
+
+// PushEvent pushes bs and, when the buffer is full, reports the events that
+// were evicted. ev is optional and gives the events contained in bs.
+func (lb *logBuffer) PushEvent(bs []byte, ev *EventV1) (dropped []*EventV1) {
 	size := int64(len(bs))
 
 	if lb.limit > 0 {
 		if size > lb.limit {
-			return 1
+			return []*EventV1{ev}
 		}
 
 		for lb.usage+size > lb.limit {
@@ -42,14 +51,14 @@ func (lb *logBuffer) Push(bs []byte) (dropped int) {
 			if elem == nil {
 				break
 			}
-			drop := elem.Value.(logBufferElem).bs
+			drop := elem.Value.(logBufferElem)
 			lb.l.Remove(elem)
-			lb.usage -= int64(len(drop))
-			dropped++
+			lb.usage -= int64(len(drop.bs))
+			dropped = append(dropped, drop.ev)
 		}
 	}
 
-	elem := logBufferElem{bs}
+	elem := logBufferElem{bs: bs, ev: ev}
 
 	lb.l.PushBack(elem)
 	lb.usage += size

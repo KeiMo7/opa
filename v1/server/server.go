@@ -492,6 +492,13 @@ func evaluatedRuleLabels(t *topdown.EvaluatedRuleTracker) []map[string]any {
 	return t.Labels
 }
 
+func evaluatedRule(t *topdown.EvaluatedRuleTracker, path string) topdown.EvaluatedRule {
+	if t == nil {
+		t = &topdown.EvaluatedRuleTracker{}
+	}
+	return t.PrimaryFallback(path)
+}
+
 // WithCipherSuites sets the list of enabled TLS 1.0–1.2 cipher suites.
 func (s *Server) WithCipherSuites(cipherSuites *[]uint16) *Server {
 	s.cipherSuites = cipherSuites
@@ -973,7 +980,7 @@ func (s *Server) execQuery(ctx context.Context, br bundleRevisions, txn storage.
 	if includeRuleLabels {
 		results.RuleLabels = ruleLabels
 	}
-	if err := logger.Log(ctx, txn, "", parsedQuery.String(), rawInput, input, &x, ndbCache, nil, m, ruleLabels, nil); err != nil {
+	if err := logger.Log(ctx, txn, "", parsedQuery.String(), rawInput, input, &x, ndbCache, nil, m, tracker, nil); err != nil {
 		return nil, err
 	}
 	return &results, nil
@@ -1170,7 +1177,7 @@ func (s *Server) v0QueryPath(w http.ResponseWriter, r *http.Request, urlPath str
 		writer.Error(w, http.StatusNotFound, errV1)
 		return
 	}
-	err = logger.Log(ctx, txn, urlPath, "", goInput, input, &rs[0].Expressions[0].Value, ndbCache, nil, m, evaluatedRuleLabels(tracker), nil)
+	err = logger.Log(ctx, txn, urlPath, "", goInput, input, &rs[0].Expressions[0].Value, ndbCache, nil, m, tracker, nil)
 	if err != nil {
 		writer.ErrorAuto(w, err)
 		return
@@ -1638,7 +1645,7 @@ func (s *Server) v1DataGet(w http.ResponseWriter, r *http.Request) {
 		result.RuleLabels = ruleLabels
 	}
 
-	if err := logger.Log(ctx, txn, urlPath, "", goInput, input, result.Result, ndbCache, nil, m, ruleLabels, nil); err != nil {
+	if err := logger.Log(ctx, txn, urlPath, "", goInput, input, result.Result, ndbCache, nil, m, tracker, nil); err != nil {
 		writer.ErrorAuto(w, err)
 		return
 	}
@@ -1901,7 +1908,7 @@ func (s *Server) v1DataPost(w http.ResponseWriter, r *http.Request) {
 		result.RuleLabels = ruleLabels
 	}
 
-	if err := logger.Log(ctx, txn, urlPath, "", goInput, input, result.Result, ndbCache, nil, m, ruleLabels, customLog()); err != nil {
+	if err := logger.Log(ctx, txn, urlPath, "", goInput, input, result.Result, ndbCache, nil, m, tracker, customLog()); err != nil {
 		writer.ErrorAuto(w, err)
 		return
 	}
@@ -3084,7 +3091,7 @@ func (l decisionLogger) Log(
 	ndbCache builtins.NDBCache,
 	err error,
 	m metrics.Metrics,
-	evaluatedRuleLabels []map[string]any,
+	evaluated *topdown.EvaluatedRuleTracker,
 	custom map[string]any,
 ) error {
 	if l.logger == nil {
@@ -3125,7 +3132,8 @@ func (l decisionLogger) Log(
 		Error:               err,
 		Metrics:             m,
 		RequestID:           rctx.ReqID,
-		EvaluatedRuleLabels: evaluatedRuleLabels,
+		EvaluatedRuleLabels: evaluatedRuleLabels(evaluated),
+		EvaluatedRule:       evaluatedRule(evaluated, path),
 		Custom:              custom,
 	}
 

@@ -879,3 +879,226 @@ func TestMaskRuleSetMask(t *testing.T) {
 		})
 	}
 }
+
+func TestMaskRuleNewParts(t *testing.T) {
+	tests := []struct {
+		note  string
+		path  string
+		event string
+		op    maskOP
+		value any
+		exp   string
+	}{
+		{
+			note:  "erase intermediate result",
+			path:  "/intermediate_results/secret",
+			op:    maskOPRemove,
+			event: `{"intermediate_results": {"secret": "s3cr3t", "public": 1}}`,
+			exp:   `{"intermediate_results": {"public": 1}, "erased": ["/intermediate_results/secret"]}`,
+		},
+		{
+			note:  "upsert mapped result",
+			path:  "/mapped_result/token",
+			op:    maskOPUpsert,
+			value: "**REDACTED**",
+			event: `{"mapped_result": {"token": "abc"}}`,
+			exp:   `{"mapped_result": {"token": "**REDACTED**"}, "masked": ["/mapped_result/token"]}`,
+		},
+		{
+			note:  "erase request header",
+			path:  "/request_context/http/headers/Authorization",
+			op:    maskOPRemove,
+			event: `{"request_context": {"http": {"headers": {"Authorization": ["Bearer secret"], "Accept": ["text/plain"]}}}}`,
+			exp:   `{"request_context": {"http": {"headers": {"Accept": ["text/plain"]}}}, "erased": ["/request_context/http/headers/Authorization"]}`,
+		},
+		{
+			note:  "upsert request header",
+			path:  "/request_context/http/headers/Authorization/0",
+			op:    maskOPUpsert,
+			value: "**REDACTED**",
+			event: `{"request_context": {"http": {"headers": {"Authorization": ["Bearer secret"]}}}}`,
+			exp:   `{"request_context": {"http": {"headers": {"Authorization": ["**REDACTED**"]}}}, "masked": ["/request_context/http/headers/Authorization/0"]}`,
+		},
+		{
+			note:  "erase error text",
+			path:  "/error",
+			op:    maskOPRemove,
+			event: `{}`,
+			exp:   `{"erased": ["/error"]}`,
+		},
+		{
+			note:  "erase whole request context",
+			path:  "/request_context",
+			op:    maskOPRemove,
+			event: `{"request_context": {"http": {"headers": {"Authorization": ["Bearer secret"]}}}}`,
+			exp:   `{"erased": ["/request_context"]}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.note, func(t *testing.T) {
+			rule, err := newMaskRule(tc.path, withOP(tc.op))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.op == maskOPUpsert {
+				if err := withValue(tc.value)(rule); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var event EventV1
+			if err := util.UnmarshalJSON([]byte(tc.event), &event); err != nil {
+				t.Fatal(err)
+			}
+			var exp EventV1
+			if err := util.UnmarshalJSON([]byte(tc.exp), &exp); err != nil {
+				t.Fatal(err)
+			}
+			if tc.path == "/error" {
+				event.Error = errors.New("dial tcp: password=secret")
+			}
+
+			if undefined, err := rule.Apply(&event); err != nil {
+				t.Fatal(err)
+			} else if undefined {
+				t.Fatal("expected rule to apply")
+			}
+
+			want, _ := json.MarshalIndent(exp, "", "  ")
+			got, _ := json.MarshalIndent(event, "", "  ")
+			if !bytes.Equal(want, got) {
+				t.Fatalf("Expected:\n%s\nGot:\n%s", want, got)
+			}
+		})
+	}
+}
+
+func TestMaskRuleSetUndefinedPolicy(t *testing.T) {
+	rules := []any{"/input/missing"}
+	newSet := func(policy string) *maskRuleSet {
+		rs, err := newMaskRuleSet(rules, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs.UndefinedPolicy = policy
+		return rs
+	}
+
+	t.Run("drop", func(t *testing.T) {
+		input := any(map[string]any{"password": "secret"})
+		event := &EventV1{Input: &input}
+		if !newSet(maskUndefinedDrop).Mask(event) {
+			t.Fatal("expected event to be dropped")
+		}
+		// The part must not be mutated into an unmasked state that could be
+		// mistaken for a successfully masked event.
+		if *event.Input == nil {
+			t.Fatal("drop policy must not rewrite the input")
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		input := any(map[string]any{"password": "secret"})
+		event := &EventV1{Input: &input}
+		if newSet(maskUndefinedClear).Mask(event) {
+			t.Fatal("expected event to be kept")
+		}
+		if m, ok := (*event.Input).(map[string]any); !ok || len(m) != 0 {
+			t.Fatalf("expected input to be cleared, got %v", *event.Input)
+		}
+	})
+}
+
+func TestMaskRuleSetVersion(t *testing.T) {
+	a, err := newMaskRuleSet([]any{"/input/password"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newMaskRuleSet([]any{"/input/password"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := newMaskRuleSet([]any{"/input/ssn"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if a.Digest() == "" {
+		t.Fatal("expected non-empty digest")
+	}
+	if a.Digest() != b.Digest() {
+		t.Fatal("identical rule sets must have identical digests")
+	}
+	if a.Digest() == c.Digest() {
+		t.Fatal("different rule sets must have different digests")
+	}
+}
+
+func TestMaskRuleSetOnlyNamedPaths(t *testing.T) {
+	rs, err := newMaskRuleSet([]any{"/input/users/0/name"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := any(map[string]any{
+		"users": []any{
+			map[string]any{"name": "alice", "role": "admin"},
+			map[string]any{"name": "bob", "role": "user"},
+		},
+		"count": 2,
+	})
+	event := &EventV1{Input: &input, Path: "authz/allow", DecisionID: "d1"}
+
+	if rs.Mask(event) {
+		t.Fatal("did not expect the event to be dropped")
+	}
+
+	got := (*event.Input).(map[string]any)
+	users := got["users"].([]any)
+	if _, ok := users[0].(map[string]any)["name"]; ok {
+		t.Fatal("expected the named path to be removed")
+	}
+	if users[0].(map[string]any)["role"] != "admin" {
+		t.Fatal("expected untouched sibling fields to be preserved")
+	}
+	if users[1].(map[string]any)["name"] != "bob" {
+		t.Fatal("expected unrelated elements to be preserved")
+	}
+	if got["count"] != 2 {
+		t.Fatal("expected unrelated top-level fields to be preserved")
+	}
+	if event.Path != "authz/allow" || event.DecisionID != "d1" {
+		t.Fatal("expected non-masked event fields to be untouched")
+	}
+}
+
+func TestMaskRequestHeaderCaseInsensitive(t *testing.T) {
+	rule, err := newMaskRule("/request_context/http/headers/authorization", withOP(maskOPRemove))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event := &EventV1{
+		RequestContext: &RequestContext{HTTPRequest: &HTTPRequestContext{
+			Headers: map[string][]string{
+				"Authorization": {"Bearer secret"},
+				"Accept":        {"application/json"},
+			},
+		}},
+	}
+
+	if undefined, err := rule.Apply(event); err != nil {
+		t.Fatal(err)
+	} else if undefined {
+		t.Fatal("expected the case-insensitive header match to apply")
+	}
+
+	headers := event.RequestContext.HTTPRequest.Headers
+	if _, ok := headers["Authorization"]; ok {
+		t.Fatal("expected Authorization header to be erased despite case mismatch")
+	}
+	if len(headers) != 1 || headers["Accept"][0] != "application/json" {
+		t.Fatalf("expected Accept header to remain, got %v", headers)
+	}
+}

@@ -82,6 +82,13 @@ Decision log updates contain the following fields:
 | `[_].req_id`                       | `number`        | Incremental request identifier, and unique only to the OPA instance, for the request that started the policy query. The attribute value is the same as the value present in others logs (request, response, and print) and could be used to correlate them all. This attribute will be included just when OPA runtime is initialized in server mode and the log level is equal to or greater than info. |
 | `[_].ids`                          | `array[string]` | List of annotation `id` values for rules that were successfully evaluated. Present automatically when any loaded policy contains rules with `id` annotations, or when external rule sources are registered. Duplicate IDs are suppressed.                                                                                                                                                               |
 | `[_].rule_labels`                  | `array[object]` | List of merged `labels` maps for rules that were successfully evaluated. For each rule, labels are folded across its annotation chain with inner-scope-wins precedence (`subpackages` < `package` < `document` < `rule`). Identical merged maps across rules are deduplicated. Present only when at least one evaluated rule contributes labels.                                                        |
+| `[_].rule_id`                      | `string`        | Reference of the rule that determined the decision, e.g. `data.authz.allow`. Set to a deterministic placeholder (`unknown`, or the decision path) when no rule could be attributed.                                                                                                                                                                                                                     |
+| `[_].rule_package`                 | `string`        | Package the deciding rule belongs to, e.g. `data.authz`. Always non-empty when the event was produced by the server or SDK.                                                                                                                                                                                                                                                                             |
+| `[_].policy_version`               | `string`        | Version of the deciding rule's source (annotations included). Unlike `bundles[_].revision`, which versions a whole bundle, this versions the individual policy rule. `unversioned` when it cannot be determined.                                                                                                                                                                                       |
+| `[_].masking_version`              | `string`        | Version of the masking rules in effect when the event was masked. Operators can pin this with `decision_logs.masking.version`; otherwise it is a digest of the effective rules. Present only when masking was applied.                                                                                                                                                                                    |
+| `[_].sampled`                      | `boolean`       | Set on the summary event emitted in place of an event dropped by `reporting.sample_rate`. The summary retains `decision_id`, `result`, and rule provenance, and never carries input, headers or other values.                                                                                                                                                                                          |
+| `[_].truncated`                    | `boolean`       | Set when the event no longer carries its complete result, e.g. because `nd_builtin_cache` was removed to fit `upload_size_limit_bytes`. Receivers must treat the decision as incomplete.                                                                                                                                                                                                                |
+| `[_].truncated_parts`              | `array[string]` | Names of the event parts removed by truncation, e.g. `["nd_builtin_cache"]`. The removed values themselves are never recorded.                                                                                                                                                                                                                                                                         |
 
 If the decision log was successfully uploaded to the remote service, it should respond with an HTTP 2xx status. If the
 service responds with a non-2xx status, OPA will requeue the last chunk containing decision log events and upload it
@@ -189,13 +196,34 @@ from the decision log event. The erased paths are recorded on the event itself:
 
 There are a few restrictions on the JSON Pointers that OPA will erase:
 
-- Pointers must be prefixed with `/input`, `/result`, or `/nd_builtin_cache`.
+- Pointers must be prefixed with `/input`, `/result`, `/nd_builtin_cache`,
+  `/intermediate_results`, `/mapped_result`, `/request_context`, `/error`, or
+  `/custom`. Request headers are addressed as
+  `/request_context/http/headers/<header-name>` (an individual value as
+  `/request_context/http/headers/<header-name>/<index>`); `/error` and
+  `/request_context` support whole-field `remove` only.
 - Pointers may point to undefined data. For example `/input/name/first` in the
-  example above would be undefined. Masking operations on undefined pointers are
-  ignored.
+  example above would be undefined. By default, an event whose mask rule
+  cannot be applied is **dropped** (and counted by
+  `decision_logs_masking_undefined_path_dropped`) rather than persisted
+  unmasked. Set `decision_logs.masking.undefined_path_policy` to `clear` to
+  keep the event with the targeted part conservatively emptied instead.
 - Pointers can also refer to arrays both as part of the path and as the last
   element in the path. For example, both `/input/users/0/name` and
   `/input/users/0` would be valid.
+
+Every masked event records `erased`/`masked` paths and the `masking_version` of
+the rules that produced them. No original value is retained.
+
+### Masking failure policy
+
+Masking runs before an event is buffered or uploaded, so an event that fails
+masking never reaches the queue. Mask rule evaluation errors (including
+timeouts) drop the event and increment `decision_logs_masking_failure`; a mask
+rule set that cannot be parsed drops the event and increments
+`decision_logs_masking_parse_failure`. The main evaluation and the response to
+the client are never affected.
+
 
 In order to **modify** the contents of an input field, the **mask** rule may utilize the following format.
 
@@ -305,6 +333,22 @@ allow the service to consume logs without being overwhelmed. The `max_decisions_
 to set the maximum number of decision log events to buffer per second. OPA will drop events if the rate limit is exceeded.
 This option provides users more control over how OPA buffers log events and is an effective mechanism to make sure the
 service can successfully process incoming log events.
+
+Events dropped by a rate limit, by a full buffer, or by a size limit are
+recorded as drop records (decision ID, reason and timestamp) in a bounded
+in-memory ring, retrievable via `Plugin.DropRecords` and
+`Plugin.DropRecordsForDecision`. A drop record is written exactly once, when
+the event is discarded; upload retries do not create duplicate records.
+
+## Sampling Decision Logs
+
+Set `reporting.sample_rate` to a fraction in `(0, 1]` to retain only that share
+of high-volume decision logs. A sampled-out event is replaced by a summary
+carrying its `decision_id`, `result`, rule provenance (`rule_id`,
+`rule_package`, `policy_version`) and `sampled: true`. The summary never
+contains input, request headers or any other value that masking would otherwise
+remove. Sampling is applied after masking.
+
 
 ## Ecosystem Projects
 

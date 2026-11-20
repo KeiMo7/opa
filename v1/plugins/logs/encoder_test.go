@@ -69,7 +69,10 @@ func TestLastDroppedNDSize(t *testing.T) {
 		t.Errorf("expected %v chunks, got %d", expectedChunks, len(chunk))
 	}
 
-	expectedBytesWritten := 157 // size after dropping the ND cache
+	// After dropping the ND cache and marking the event truncated. The marker
+	// itself adds bytes (truncated flag and removed part name), so the event is
+	// larger than the bare ND-cache-free form.
+	expectedBytesWritten := 213
 	if enc.bytesWritten != expectedBytesWritten {
 		t.Errorf("Expected %d bytes written but got %d", expectedBytesWritten, enc.bytesWritten)
 	}
@@ -88,11 +91,15 @@ func TestLastDroppedNDSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The first event is retained after its ND cache is dropped and it is
+	// marked truncated. The second event no longer fits alongside it, so the
+	// first chunk is flushed and the second event is retained.
+	expectedChunks = 1
 	if len(chunk) != expectedChunks {
 		t.Errorf("expected %v chunks, got %d", expectedChunks, len(chunk))
 	}
 
-	expectedBytesWritten = 314 // size of two events written
+	expectedBytesWritten = 213 // only the second event remains in the chunk
 	if enc.bytesWritten != expectedBytesWritten {
 		t.Errorf("Expected %d bytes written but got %d", expectedBytesWritten, enc.bytesWritten)
 	}
@@ -118,9 +125,10 @@ func TestChunkMaxUploadSizeLimitNDBCacheDropping(t *testing.T) {
 			name:                         "drop ND cache to fit",
 			uploadSizeLimitBytes:         200,
 			expectedDroppedNDCacheEvents: 1,
-			// written after dropping the ND cache, otherwise the size would have been 3472
-			expectedBytesWritten:      157,
-			expectedUncompressedLimit: 400,
+			// written after dropping the ND cache and marking the event
+			// truncated (otherwise the size would have been 3472)
+			expectedBytesWritten:      213,
+			expectedUncompressedLimit: 424,
 		},
 		{
 			name:                      "dropping the ND cache doesn't help, drop the event",
