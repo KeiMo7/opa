@@ -1,0 +1,16 @@
+./builder_gen.go
+./doc.go
+./errors.go
+./fastpath.go
+./filter.go
+./http.go
+./interface.go
+./io.go
+./jwt.go
+./options.go
+./options_gen.go
+./serialize.go
+./token_gen.go
+./token_options.go
+./token_options_gen.go
+./validate.go

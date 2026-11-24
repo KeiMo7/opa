@@ -1,0 +1,7 @@
+./benchmark.go
+./ci_skip.go
+./doc.go
+./populate.go
+./tempfs.go
+./tempus.go
+./zeroreader.go

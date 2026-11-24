@@ -1,0 +1,6 @@
+./buffer.go
+./encoder.go
+./eventBuffer.go
+./mask.go
+./plugin.go
+./sizeBuffer.go

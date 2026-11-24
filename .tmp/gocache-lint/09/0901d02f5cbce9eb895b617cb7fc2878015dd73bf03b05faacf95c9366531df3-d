@@ -1,0 +1,6 @@
+./auth.go
+./auth_tls.go
+./aws.go
+./azure.go
+./gcp.go
+./rest.go

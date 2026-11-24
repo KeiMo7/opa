@@ -1,0 +1,12 @@
+./completion.go
+./display.go
+./engine.go
+./group.go
+./hint.go
+./insert.go
+./isearch.go
+./message.go
+./suffix.go
+./syntax.go
+./utils.go
+./values.go

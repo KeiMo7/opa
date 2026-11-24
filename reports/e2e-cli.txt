@@ -1,0 +1,139 @@
+================ 1. boot OPA server ================
+opa pid=3341847
+{}
+
+================ 2. drive 7 decisions ================
+server stopped
+================ ledger files on disk ================
+total 28
+drwxr-xr-x 2 wll wll 4096 Nov 24 09:29 .
+drwxr-xr-x 3 wll wll 4096 Nov 24 09:29 ..
+-rw------- 1 wll wll    0 Nov 24 09:29 .lock
+-rw------- 1 wll wll  362 Nov 24 09:29 ledger-state.json
+-rw------- 1 wll wll   32 Nov 24 09:29 ledger.key
+-rw------- 1 wll wll 1811 Nov 24 09:29 segment-000001.jsonl
+-rw------- 1 wll wll 1963 Nov 24 09:29 segment-000002.jsonl
+-rw------- 1 wll wll  912 Nov 24 09:29 segment-000003.jsonl
+---- secret leak check ----
+OK: no raw sensitive input on disk
+================ 3. offline verify (clean) ================
+LEDGER VERIFICATION: OK
+directories: ledger
+segments: 3, records verified: 7, total record lines seen: 7
+- ledger/segment-000001.jsonl index=1 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[1..3] records=3 ok
+- ledger/segment-000002.jsonl index=2 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[4..6] records=3 ok
+- ledger/segment-000003.jsonl index=3 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[7..7] records=1 ok
+instance 367963fc-f870-4a79-8141-f77abdb4712d: verified=7 seq window=[1..7] dirs=ledger
+machine-readable report written to report.json
+verify exit=0 (want 0)
+---- machine report ----
+{
+  "ok": true,
+  "generated_at": "2026-11-24T01:29:55.986271592Z",
+  "directories": [
+    "ledger"
+  ],
+  "segments": [
+    {
+      "directory": "ledger",
+      "file": "segment-000001.jsonl",
+      "segment_index": 1,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 1,
+      "last_seq": 3,
+      "records": 3,
+      "segment_hash": "6b4ec4678ef1753a7c7a862de2013bd016bf410680ffccd3d77048b9e8e4097e",
+      "chain_from_prior_ok": true,
+      "ok": true
+    },
+    {
+      "directory": "ledger",
+      "file": "segment-000002.jsonl",
+      "segment_index": 2,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 4,
+      "last_seq": 6,
+      "records": 3,
+      "segment_hash": "fc51b5ee412f1a3053a2145b123711fdbc6a79f7d2854c90ab297ea5a982bb44",
+      "prev_segment_digest": "6b4ec4678ef1753a7c7a862de2013bd016bf410680ffccd3d77048b9e8e4097e",
+      "chain_from_prior_ok": true,
+      "ok": true
+    },
+    {
+      "directory": "ledger",
+      "file": "segment-000003.jsonl",
+      "segment_index": 3,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 7,
+      "last_seq": 7,
+      "records": 1,
+      "segment_hash": "623ef70322f91e7fe465d9038e7f80c4bba5f582098623f3840da46d428980b0",
+      "prev_segment_digest": "fc51b5ee412f1a3053a2145b123711fdbc6a79f7d2854c90ab297ea5a982bb44",
+      "chain_from_prior_ok": true,
+      "ok": true
+    }
+  ],
+  "instances": [
+    {
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "segments": [
+        "ledger/segment-000001.jsonl",
+        "ledger/segment-000002.jsonl",
+        "ledger/segment-000003.jsonl"
+      ],
+      "earliest_available_seq": 1,
+      "last_seq": 7,
+      "records_verified": 7,
+      "gaps": null,
+      "evicted_prefix": false,
+      "directories": [
+        "ledger"
+      ]
+    }
+  ],
+  "confirmed_records": 7,
+  "total_records_seen": 7
+}
+
+================ 4a. tamper one byte ================
+LEDGER VERIFICATION: FAILED
+directories: ledger
+segments: 3, records verified: 0, total record lines seen: 3
+first anomaly: ledger/segment-000001.jsonl:2 (seq 1): record digest/signature mismatch: HMAC digest mismatch
+- ledger/segment-000001.jsonl index=1 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[1..0] records=0 FAIL: record digest/signature mismatch: HMAC digest mismatch
+- ledger/segment-000002.jsonl index=2 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[4..0] records=0 FAIL: digest chain broken at seq 4 (missing predecessor records)
+- ledger/segment-000003.jsonl index=3 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[7..0] records=0 FAIL: digest chain broken at seq 7 (missing predecessor records)
+instance 367963fc-f870-4a79-8141-f77abdb4712d: verified=0 seq window=[0..0] dirs=ledger
+  note: segments preceding the earliest available one have been evicted or are missing
+Error: ledger verification failed
+verify exit=1 (want non-zero)
+restored verify exit=0 (want 0)
+================ 4b. reorder two records ================
+LEDGER VERIFICATION: FAILED
+directories: ledger
+segments: 3, records verified: 0, total record lines seen: 3
+- ledger/segment-000001.jsonl index=1 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[1..0] records=0 FAIL: digest chain broken at seq 2 (reordered or rewritten records)
+- ledger/segment-000002.jsonl index=2 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[4..0] records=0 FAIL: digest chain broken at seq 4 (missing predecessor records)
+- ledger/segment-000003.jsonl index=3 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[7..0] records=0 FAIL: digest chain broken at seq 7 (missing predecessor records)
+instance 367963fc-f870-4a79-8141-f77abdb4712d: verified=0 seq window=[0..0] dirs=ledger
+  note: segments preceding the earliest available one have been evicted or are missing
+Error: ledger verification failed
+verify exit=1 (want non-zero)
+restored verify exit=0 (want 0)
+================ 4c. delete an interior segment ================
+LEDGER VERIFICATION: FAILED
+directories: ledger
+segments: 2, records verified: 3, total record lines seen: 4
+- ledger/segment-000001.jsonl index=1 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[1..3] records=3 ok
+- ledger/segment-000003.jsonl index=3 instance=367963fc-f870-4a79-8141-f77abdb4712d alg=HS256 seq=[7..0] records=0 FAIL: digest chain broken at seq 7 (missing predecessor records)
+instance 367963fc-f870-4a79-8141-f77abdb4712d: verified=3 seq window=[1..3] dirs=ledger
+  note: segments preceding the earliest available one have been evicted or are missing
+Error: ledger verification failed
+verify exit=1 (want non-zero: chain broken)
+restored verify exit=0 (want 0)
+================ 5. foreign key rejected ================
+Error: no segments found in ledgerB
+================ ALL E2E STEPS DONE ================

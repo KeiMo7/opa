@@ -1,0 +1,6 @@
+=== RUN   TestBenchMainWithYAMLInputFileE2E
+=== PAUSE TestBenchMainWithYAMLInputFileE2E
+=== CONT  TestBenchMainWithYAMLInputFileE2E
+--- PASS: TestBenchMainWithYAMLInputFileE2E (1.67s)
+PASS
+ok  	github.com/open-policy-agent/opa/cmd	1.688s

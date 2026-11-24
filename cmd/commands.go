@@ -41,6 +41,7 @@ func Command(rootCommand *cobra.Command, brand string) *cobra.Command {
 	initExec(rootCommand, brand)
 	initFmt(rootCommand, brand)
 	initInspect(rootCommand, brand)
+	initLedger(rootCommand, brand)
 	initOracle(rootCommand)
 	initParse(rootCommand, brand)
 	initRefactor(rootCommand)

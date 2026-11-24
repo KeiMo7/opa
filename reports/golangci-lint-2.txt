@@ -1,0 +1,7 @@
+level=warning msg="[runner/exclusion_paths] The pattern \"^ast|^bundle|^cover|^compile|^debug|^dependencies|^download|^format|^loader|^server\" match no issues"
+level=warning msg="[runner/exclusion_paths] The pattern \"^topdown|^plugins|^rego|^repl|^resolver|^runtime|^sdk|^storage|^test|^util\" match no issues"
+level=warning msg="[runner/exclusion_paths] The pattern \"^internal/gojsonschema|^internal/methodlesstemplate|node_modules|example_test\" match no issues"
+level=warning msg="[runner/exclusion_rules] Skipped 0 issues by rules: [Text: \"unsecure-url-scheme\", Path: \"v1/plugins/rest\", Linters: \"revive\"]"
+level=warning msg="[runner/exclusion_rules] Skipped 0 issues by rules: [Path: \"internal/lcss\", Linters: \"revive\"]"
+0 issues.
+exit=0

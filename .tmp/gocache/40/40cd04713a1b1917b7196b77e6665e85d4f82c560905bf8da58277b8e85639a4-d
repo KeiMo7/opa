@@ -1,0 +1,10 @@
+./algorithms.go
+./crypto_signer.go
+./dsig.go
+./ecdsa.go
+./eddsa.go
+./hmac.go
+./rsa.go
+./sign.go
+./validation.go
+./verify.go

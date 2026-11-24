@@ -1,0 +1,8 @@
+./config.go
+./csv.go
+./deprecated.go
+./option.go
+./stream.go
+./struct.go
+./tablewriter.go
+./zoo.go

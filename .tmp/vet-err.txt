@@ -1,0 +1,6 @@
+# github.com/open-policy-agent/opa/v1/plugins/logs/ledger
+# [github.com/open-policy-agent/opa/v1/plugins/logs/ledger]
+vet: v1/plugins/logs/ledger/ledger_test.go:820:60: not enough arguments in call to (func(i int) literal)
+	have ()
+	want (int)
+exit=1

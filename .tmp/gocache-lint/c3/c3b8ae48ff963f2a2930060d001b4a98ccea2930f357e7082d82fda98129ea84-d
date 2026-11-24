@@ -1,0 +1,5 @@
+./bind.go
+./config.go
+./constants.go
+./inputrc.go
+./parse.go

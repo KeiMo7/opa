@@ -1,0 +1,9 @@
+./completion.go
+./config.go
+./cursor.go
+./dispatch.go
+./emacs.go
+./engine.go
+./mode.go
+./pending.go
+./vim.go

@@ -1,0 +1,3 @@
+./compress.go
+./decoding.go
+./handlers.go

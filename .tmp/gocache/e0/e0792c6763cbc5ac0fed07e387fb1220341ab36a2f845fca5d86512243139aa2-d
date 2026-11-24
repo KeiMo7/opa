@@ -1,0 +1,12 @@
+./allocator.go
+./allocatormethods.go
+./arena.go
+./atomic_go119.go
+./clone.go
+./cloner.go
+./headers.go
+./interfacedata.go
+./mapiter_go112.go
+./memory.go
+./structtype.go
+./wrapper.go

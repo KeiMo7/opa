@@ -1,0 +1,10 @@
+./blueprint.go
+./colorized.go
+./fn.go
+./html.go
+./junction.go
+./markdown.go
+./ocean.go
+./rgb.go
+./svg.go
+./tint.go

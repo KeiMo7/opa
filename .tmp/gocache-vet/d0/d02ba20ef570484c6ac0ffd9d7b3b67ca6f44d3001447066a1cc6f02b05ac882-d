@@ -1,0 +1,6 @@
+./checks.go
+./compile.go
+./constraints.go
+./multivalued.go
+./shapes.go
+./ucast.go

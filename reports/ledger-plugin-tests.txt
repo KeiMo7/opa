@@ -1,0 +1,22 @@
+=== RUN   TestFactoryValidateDefaults
+=== PAUSE TestFactoryValidateDefaults
+=== RUN   TestFactoryValidateRejectsBadConfig
+=== PAUSE TestFactoryValidateRejectsBadConfig
+=== RUN   TestPluginRoundTrip
+=== PAUSE TestPluginRoundTrip
+=== RUN   TestPluginRedactResult
+=== PAUSE TestPluginRedactResult
+=== RUN   TestPluginLogBeforeStartErrors
+=== PAUSE TestPluginLogBeforeStartErrors
+=== CONT  TestFactoryValidateDefaults
+=== CONT  TestPluginRedactResult
+=== CONT  TestPluginRoundTrip
+=== CONT  TestPluginLogBeforeStartErrors
+=== CONT  TestFactoryValidateRejectsBadConfig
+--- PASS: TestFactoryValidateRejectsBadConfig (0.00s)
+--- PASS: TestFactoryValidateDefaults (0.00s)
+--- PASS: TestPluginLogBeforeStartErrors (0.00s)
+--- PASS: TestPluginRedactResult (0.03s)
+--- PASS: TestPluginRoundTrip (0.05s)
+PASS
+ok  	github.com/open-policy-agent/opa/v1/plugins/logger/ledger	0.056s

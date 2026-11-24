@@ -1,0 +1,70 @@
+{
+  "ok": true,
+  "generated_at": "2026-11-24T01:29:55.986271592Z",
+  "directories": [
+    "ledger"
+  ],
+  "segments": [
+    {
+      "directory": "ledger",
+      "file": "segment-000001.jsonl",
+      "segment_index": 1,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 1,
+      "last_seq": 3,
+      "records": 3,
+      "segment_hash": "6b4ec4678ef1753a7c7a862de2013bd016bf410680ffccd3d77048b9e8e4097e",
+      "chain_from_prior_ok": true,
+      "ok": true
+    },
+    {
+      "directory": "ledger",
+      "file": "segment-000002.jsonl",
+      "segment_index": 2,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 4,
+      "last_seq": 6,
+      "records": 3,
+      "segment_hash": "fc51b5ee412f1a3053a2145b123711fdbc6a79f7d2854c90ab297ea5a982bb44",
+      "prev_segment_digest": "6b4ec4678ef1753a7c7a862de2013bd016bf410680ffccd3d77048b9e8e4097e",
+      "chain_from_prior_ok": true,
+      "ok": true
+    },
+    {
+      "directory": "ledger",
+      "file": "segment-000003.jsonl",
+      "segment_index": 3,
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "algorithm": "HS256",
+      "first_seq": 7,
+      "last_seq": 7,
+      "records": 1,
+      "segment_hash": "623ef70322f91e7fe465d9038e7f80c4bba5f582098623f3840da46d428980b0",
+      "prev_segment_digest": "fc51b5ee412f1a3053a2145b123711fdbc6a79f7d2854c90ab297ea5a982bb44",
+      "chain_from_prior_ok": true,
+      "ok": true
+    }
+  ],
+  "instances": [
+    {
+      "instance_id": "367963fc-f870-4a79-8141-f77abdb4712d",
+      "segments": [
+        "ledger/segment-000001.jsonl",
+        "ledger/segment-000002.jsonl",
+        "ledger/segment-000003.jsonl"
+      ],
+      "earliest_available_seq": 1,
+      "last_seq": 7,
+      "records_verified": 7,
+      "gaps": null,
+      "evicted_prefix": false,
+      "directories": [
+        "ledger"
+      ]
+    }
+  ],
+  "confirmed_records": 7,
+  "total_records_seen": 7
+}

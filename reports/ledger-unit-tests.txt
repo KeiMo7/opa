@@ -1,0 +1,60 @@
+=== RUN   TestAppendAndVerifyRoundtrip
+=== PAUSE TestAppendAndVerifyRoundtrip
+=== RUN   TestRestartContinuesChain
+=== PAUSE TestRestartContinuesChain
+=== RUN   TestCrashRestartSimulated
+=== RUN   TestCrashRestartSimulated/hard_kill_then_continue
+=== RUN   TestCrashRestartSimulated/torn_tail_truncated
+--- PASS: TestCrashRestartSimulated (0.11s)
+    --- PASS: TestCrashRestartSimulated/hard_kill_then_continue (0.06s)
+    --- PASS: TestCrashRestartSimulated/torn_tail_truncated (0.04s)
+=== RUN   TestTamperSingleByte
+=== PAUSE TestTamperSingleByte
+=== RUN   TestTamperDeleteSegment
+=== PAUSE TestTamperDeleteSegment
+=== RUN   TestTamperReorderRecords
+=== PAUSE TestTamperReorderRecords
+=== RUN   TestSegmentReplacementDetected
+=== PAUSE TestSegmentReplacementDetected
+=== RUN   TestConcurrentWritesAreGapless
+=== PAUSE TestConcurrentWritesAreGapless
+=== RUN   TestDiskLimitEvictsOldestSegments
+=== PAUSE TestDiskLimitEvictsOldestSegments
+=== RUN   TestUnwritableDirectoryRejectsAppends
+=== PAUSE TestUnwritableDirectoryRejectsAppends
+=== RUN   TestMultipleInstancesReportPerInstanceGaps
+=== PAUSE TestMultipleInstancesReportPerInstanceGaps
+=== RUN   TestSaltedInputDigestIsOneWayAndStable
+=== PAUSE TestSaltedInputDigestIsOneWayAndStable
+=== RUN   TestEdDSALedgerVerifiesWithPublicKeyOnly
+=== PAUSE TestEdDSALedgerVerifiesWithPublicKeyOnly
+=== RUN   TestBackpressureBlocksThenRecovers
+=== PAUSE TestBackpressureBlocksThenRecovers
+=== CONT  TestAppendAndVerifyRoundtrip
+=== CONT  TestDiskLimitEvictsOldestSegments
+=== CONT  TestTamperSingleByte
+=== CONT  TestEdDSALedgerVerifiesWithPublicKeyOnly
+=== CONT  TestRestartContinuesChain
+=== CONT  TestTamperReorderRecords
+=== CONT  TestConcurrentWritesAreGapless
+=== CONT  TestSegmentReplacementDetected
+=== CONT  TestSaltedInputDigestIsOneWayAndStable
+=== CONT  TestBackpressureBlocksThenRecovers
+=== CONT  TestTamperDeleteSegment
+=== CONT  TestMultipleInstancesReportPerInstanceGaps
+=== CONT  TestUnwritableDirectoryRejectsAppends
+--- PASS: TestUnwritableDirectoryRejectsAppends (0.03s)
+--- PASS: TestSaltedInputDigestIsOneWayAndStable (0.04s)
+--- PASS: TestTamperReorderRecords (0.06s)
+--- PASS: TestEdDSALedgerVerifiesWithPublicKeyOnly (0.07s)
+--- PASS: TestBackpressureBlocksThenRecovers (0.07s)
+--- PASS: TestAppendAndVerifyRoundtrip (0.09s)
+--- PASS: TestSegmentReplacementDetected (0.11s)
+--- PASS: TestTamperSingleByte (0.12s)
+--- PASS: TestRestartContinuesChain (0.13s)
+--- PASS: TestTamperDeleteSegment (0.14s)
+--- PASS: TestMultipleInstancesReportPerInstanceGaps (0.16s)
+--- PASS: TestDiskLimitEvictsOldestSegments (0.21s)
+--- PASS: TestConcurrentWritesAreGapless (15.81s)
+PASS
+ok  	github.com/open-policy-agent/opa/v1/plugins/logs/ledger	15.921s

@@ -1,0 +1,9 @@
+./breakpoint.go
+./debugger.go
+./event.go
+./frame.go
+./latch.go
+./stacktrace.go
+./thread.go
+./trace.go
+./variable.go

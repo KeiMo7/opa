@@ -1,0 +1,10 @@
+./exec.go
+./json_reporter.go
+./params.go
+./parser.go
+./std_in_reader.go
+./exec_test.go
+./json_reporter_test.go
+./params_test.go
+./parser_test.go
+./std_in_reader_test.go

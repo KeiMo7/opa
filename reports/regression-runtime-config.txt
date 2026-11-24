@@ -1,0 +1,2 @@
+ok  	github.com/open-policy-agent/opa/v1/runtime	13.706s
+ok  	github.com/open-policy-agent/opa/v1/config	0.022s

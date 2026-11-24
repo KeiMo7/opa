@@ -1,0 +1,9 @@
+./bundle.go
+./file.go
+./filefs.go
+./hash.go
+./keys.go
+./proto.go
+./sign.go
+./store.go
+./verify.go

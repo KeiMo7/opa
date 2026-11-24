@@ -1,0 +1,15 @@
+/home/wll/uid82/.tmp/opa_test41951590/test.rego:2:
+data.test.test_fail: FAIL (1.146703ms)
+--------------------------------------------------------------------------------
+FAIL: 1/1
+--- FAIL: TestBenchMainWithYAMLInputFileE2E (0.43s)
+    bench_test.go:654: Unexpected return code 1, expected 0
+--- FAIL: TestBenchMainCompatibleFlags (0.00s)
+    --- FAIL: TestBenchMainCompatibleFlags/v0+v1,_keywords_not_used_(v0_takes_precedence),_e2e (0.41s)
+        bench_test.go:1061: Unexpected return code 1, expected 0
+    --- FAIL: TestBenchMainCompatibleFlags/v0,_keywords_not_used,_e2e (0.43s)
+        bench_test.go:1061: Unexpected return code 1, expected 0
+FAIL
+FAIL	github.com/open-policy-agent/opa/cmd	159.942s
+FAIL
+exit=1

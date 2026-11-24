@@ -1,0 +1,9 @@
+./cpuid.go
+./cpuid_amd64.go
+./crypto.go
+./mmap_linux.go
+./mmap_unix.go
+./path.go
+./platform.go
+./time.go
+./time_notwindows.go

@@ -1,0 +1,7 @@
+ok  	github.com/open-policy-agent/opa/v1/plugins/logs	0.297s
+ok  	github.com/open-policy-agent/opa/v1/plugins/logs/ledger	16.483s
+?   	github.com/open-policy-agent/opa/v1/plugins/logs/status	[no test files]
+ok  	github.com/open-policy-agent/opa/v1/plugins/status	1.439s
+ok  	github.com/open-policy-agent/opa/v1/plugins/logger/file	0.014s
+ok  	github.com/open-policy-agent/opa/v1/plugins/logger/ledger	0.079s
+exit=0

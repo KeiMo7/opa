@@ -1,0 +1,4 @@
+ok  	github.com/open-policy-agent/opa/v1/plugins/logs/ledger	17.071s
+ok  	github.com/open-policy-agent/opa/v1/plugins/logger/ledger	0.080s
+ok  	github.com/open-policy-agent/opa/v1/plugins/logs	0.266s
+ok  	github.com/open-policy-agent/opa/v1/plugins/status	1.449s

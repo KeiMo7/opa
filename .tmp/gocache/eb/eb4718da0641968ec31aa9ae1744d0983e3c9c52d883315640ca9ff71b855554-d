@@ -1,0 +1,3 @@
+./metrics.go
+./plugin.go
+./plugin_test.go

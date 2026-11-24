@@ -1,0 +1,1 @@
+error: config error: invalid ledger logger config: ledger config: max_segment_size_mb must be <= disk_limit_mb

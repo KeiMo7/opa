@@ -125,6 +125,91 @@ decision_logs:
 This will dump all decisions to the console. See
 [Configuration Reference](./configuration) for more details.
 
+## Local Tamper-Evident Decision Ledger
+
+When the reliability of the decision log pipeline itself is in question — a
+process restart losing buffered records, or a log file that can be edited
+without leaving evidence — OPA can additionally persist every decision to a
+local, tamper-evident ledger. The ledger is an append-only, fsynced, hash
+chained set of segment files on disk and is verified offline with the
+`opa ledger verify` command.
+
+The ledger runs as a decision log plugin selected through the standard
+`decision_logs.plugin` key. It receives events *after* the existing mask and
+drop policies have run, so masking semantics are unchanged; it can be enabled
+alongside the normal remote upload (`service`), which keeps its existing
+batching, retry and buffering behaviour. When the plugin is not configured,
+OPA behaves exactly as before.
+
+```yaml
+plugins:
+  ledger_logger:
+    directory: /var/lib/opa/decision-ledger
+    algorithm: HS256                 # HS256 (default) | EdDSA | SHA256
+    key_file: /etc/opa/ledger.key   # optional; a random key is generated otherwise
+    max_records_per_segment: 10000
+    max_segment_size_mb: 32
+    disk_limit_mb: 1024
+    queue_size: 1024
+    redact_result: false
+decision_logs:
+  plugin: ledger_logger
+```
+
+### What a record contains
+
+Each record carries the decision id, timestamp, policy/bundle revision, the
+decision path, the evaluation latency, the result (or only a digest when
+`redact_result` is set), and the set of masked/erased field paths. The raw
+decision input is never stored: only a salted HMAC-SHA-256 digest of it is
+written, so the digest cannot be reversed into the original input and the
+random salt, generated per ledger and stored in the signed segment header,
+defeats precomputed digest lookups.
+
+### Integrity guarantees
+
+* Every record's exact JSON bytes carry an HMAC-SHA-256 digest (or an
+  Ed25519 signature) that includes the previous record's digest, forming a
+  chain. Truncation, deleting a record, swapping two records, or editing one
+  byte of a record all fail verification at the first affected line, and the
+  report states the confirmed prefix.
+* Segments rotate by record count or size. The first record of each segment
+  links to the digest of the preceding segment, so the chain crosses
+  segments. Replacing a whole segment and recomputing its internal digests
+  still fails: without the HMAC key (or Ed25519 private key) the forged
+  digests do not authenticate.
+* Appends are fsynced before they are acknowledged, and the segment file and
+  its directory entry are synced on creation. A hard kill can only lose
+  records whose acknowledgement had not returned; on restart, a torn
+  partial write at the tail is truncated and the sequence continues without
+  gaps or duplicate sequence numbers.
+* Sequence numbers are monotonic and authoritative. Wall-clock time is
+  recorded for reference only, so a clock jump never reorders evidence.
+* When the configured disk limit is reached, the oldest sealed segments are
+  evicted; the active segment is never removed. Eviction is reported as a
+  per-instance gap rather than silently hidden, and disk-full or
+  unreadable-directory errors make further appends fail explicitly and
+  increment the `decision_logs_ledger_write_failures` metric instead of
+  dropping records.
+
+### Offline verification
+
+```bash
+# HMAC ledger
+opa ledger verify /var/lib/opa/decision-ledger --key /etc/opa/ledger.key \
+  --output report.json
+
+# EdDSA ledger: only the public key is needed to verify
+opa ledger verify /var/lib/opa/decision-ledger --public-key ed25519.pub
+```
+
+The command prints a human-readable summary and, with `--output`, a
+machine-parseable JSON report. It exits non-zero on the first anomaly.
+Several directories can be passed at once: each ledger instance's sequence
+gaps are listed separately, never merged into a single total. Verification
+takes a shared lock on each directory and refuses to run while a writer may
+still be appending.
+
 ## Masking Sensitive Data
 
 Policy queries may contain sensitive information in the `input` document that

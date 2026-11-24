@@ -1,0 +1,4 @@
+./core.go
+./helpers.go
+./source_capture.go
+./walk.go

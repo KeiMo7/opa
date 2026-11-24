@@ -1,0 +1,9 @@
+plugins:
+  ledger_logger:
+    directory: /home/wll/uid82/.tmp/e2e-data/ledger
+    max_records_per_segment: 3
+    max_segment_size_mb: 1
+    disk_limit_mb: 16
+decision_logs:
+  plugin: ledger_logger
+  console: false

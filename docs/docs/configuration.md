@@ -861,6 +861,27 @@ logs a warning at startup for bundles in this state. Add a `signing` block to en
 | `decision_logs.console`                            | `boolean` | No (default: `false`)            | Log the decisions locally to the console. When enabled alongside a remote decision logging API the `service` must be configured, the default `service` selection will be disabled.                                                                       |
 | `decision_logs.request_context.http.headers`       | `array`   | No                               | List of HTTP headers to include in the decision log. OPA will include the values for these headers in the decision log if they exist in the incoming HTTP request.                                                                                       |
 
+### Local Tamper-Evident Decision Ledger
+
+The built-in `ledger_logger` plugin persists every decision to a local,
+fsynced, hash-chained ledger. It is selected with `decision_logs.plugin` and
+its configuration lives under `plugins.ledger_logger`. See
+[Local Tamper-Evident Decision Ledger](./management-decision-logs#local-tamper-evident-decision-ledger)
+for the integrity model and the `opa ledger verify` command.
+
+| Field                                                  | Type      | Required | Description                                                                                                                                                              |
+| ------------------------------------------------------ | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `plugins.ledger_logger.directory`                      | `string`  | Yes      | Directory holding the ledger segment and state files; created if missing. Locked against concurrent writer processes.                                                    |
+| `plugins.ledger_logger.algorithm`                      | `string`  | No (default: `HS256`) | Record authentication algorithm: `HS256` (keyed HMAC-SHA-256), `EdDSA` (Ed25519 signatures), or `SHA256` (keyless; detects corruption but not key-holding attackers). |
+| `plugins.ledger_logger.key_file`                       | `string`  | No       | HMAC secret file (`HS256`) or PEM-encoded Ed25519 private key (`EdDSA`). For `HS256`, a random 32-byte key is generated in `directory` with `0600` permissions when unset. |
+| `plugins.ledger_logger.key_id`                         | `string`  | No       | Informal key identifier recorded in every segment header, useful for future key rotation.                                                                                |
+| `plugins.ledger_logger.instance_id`                    | `string`  | No       | Identifier written into every record; defaults to the OPA instance id. Each OPA instance should keep its own ledger directory.                                          |
+| `plugins.ledger_logger.max_records_per_segment`        | `integer` | No (default: `10000`) | Rotate to a new segment after this many records.                                                                                                                         |
+| `plugins.ledger_logger.max_segment_size_mb`            | `integer` | No (default: `32`)    | Rotate when the active segment grows past this size in MiB. Must be no larger than `disk_limit_mb`.                                                                     |
+| `plugins.ledger_logger.disk_limit_mb`                  | `integer` | No (default: `1024`)  | Hard cap in MiB on total segment size. The oldest sealed segments are evicted to stay under it; the active segment is never evicted.                                    |
+| `plugins.ledger_logger.queue_size`                     | `integer` | No (default: `1024`)  | Bound on the in-memory append queue; a full queue applies backpressure onto decision producers.                                                                          |
+| `plugins.ledger_logger.redact_result`                  | `boolean` | No (default: `false`) | Store only a digest of the decision result instead of the result itself.                                                                                                 |
+
 ## Discovery
 
 | Field                                            | Type                           | Required              | Description                                                                                                                                                                                                                                                                                         |

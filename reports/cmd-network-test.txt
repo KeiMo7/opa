@@ -1,0 +1,31 @@
+{"addrs":[":8181"],"diagnostic-addrs":[],"fields.time":"2026-11-24T09:01:17.176528809+08:00","level":"info","msg":"Initializing server. OPA is running on a public (0.0.0.0) network interface. Unless you intend to expose OPA outside of the host, binding to the localhost interface (--addr localhost:8181) is recommended. See https://www.openpolicyagent.org/docs/latest/security/#interface-binding","time":"2026-11-24T09:01:17+08:00"}
+{"level":"info","msg":"Shutting down...","time":"2026-11-24T09:03:16+08:00"}
+{"level":"info","msg":"Server shutdown.","time":"2026-11-24T09:03:16+08:00"}
+{"addrs":[":8181"],"diagnostic-addrs":[],"fields.time":"2026-11-24T09:03:16.833526282+08:00","level":"info","msg":"Initializing server. OPA is running on a public (0.0.0.0) network interface. Unless you intend to expose OPA outside of the host, binding to the localhost interface (--addr localhost:8181) is recommended. See https://www.openpolicyagent.org/docs/latest/security/#interface-binding","time":"2026-11-24T09:03:16+08:00"}
+{"level":"info","msg":"Shutting down...","time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Server shutdown.","time":"2026-11-24T09:05:16+08:00"}
+{"addrs":["localhost:0"],"diagnostic-addrs":[],"fields.time":"2026-11-24T09:05:16.683182668+08:00","level":"info","msg":"Initializing server.","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46544","level":"info","msg":"Received request.","req_id":1,"req_method":"GET","req_path":"/health","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46544","level":"info","msg":"Sent response.","req_id":1,"req_method":"GET","req_path":"/health","resp_bytes":3,"resp_duration":0.537273,"resp_status":200,"time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Test server ready and listening on: http://127.0.0.1:46461","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46556","level":"info","msg":"Received request.","req_id":2,"req_method":"PUT","req_path":"/v1/policies/mod2","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46556","level":"info","msg":"Sent response.","req_id":2,"req_method":"PUT","req_path":"/v1/policies/mod2","resp_bytes":711,"resp_duration":0.203895,"resp_status":400,"time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Shutting down...","time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Server shutdown.","time":"2026-11-24T09:05:16+08:00"}
+{"addrs":["localhost:0"],"diagnostic-addrs":[],"fields.time":"2026-11-24T09:05:16.788313168+08:00","level":"info","msg":"Initializing server.","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46166","level":"info","msg":"Received request.","req_id":1,"req_method":"GET","req_path":"/health","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46166","level":"info","msg":"Sent response.","req_id":1,"req_method":"GET","req_path":"/health","resp_bytes":3,"resp_duration":0.320118,"resp_status":200,"time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Test server ready and listening on: http://127.0.0.1:46029","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46176","level":"info","msg":"Received request.","req_id":2,"req_method":"PUT","req_path":"/v1/policies/mod3","time":"2026-11-24T09:05:16+08:00"}
+{"client_addr":"127.0.0.1:46176","level":"info","msg":"Sent response.","req_id":2,"req_method":"PUT","req_path":"/v1/policies/mod3","resp_bytes":3,"resp_duration":0.715857,"resp_status":200,"time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Shutting down...","time":"2026-11-24T09:05:16+08:00"}
+{"level":"info","msg":"Server shutdown.","time":"2026-11-24T09:05:16+08:00"}
+--- FAIL: TestRunServerUploadPolicy (239.72s)
+    --- FAIL: TestRunServerUploadPolicy/v0-compatible,_v0_policy (119.66s)
+        run_test.go:385: Unexpected error: API Server not ready in time
+    --- FAIL: TestRunServerUploadPolicy/v0-compatible,_v1_policy (119.85s)
+        run_test.go:385: Unexpected error: API Server not ready in time
+FAIL
+FAIL	github.com/open-policy-agent/opa/cmd	239.734s
+FAIL
+exit=1

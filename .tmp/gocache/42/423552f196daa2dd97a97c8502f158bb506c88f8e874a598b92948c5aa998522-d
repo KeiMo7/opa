@@ -1,0 +1,7 @@
+./completion.go
+./completions.go
+./emacs.go
+./history.go
+./readline.go
+./shell.go
+./vim.go

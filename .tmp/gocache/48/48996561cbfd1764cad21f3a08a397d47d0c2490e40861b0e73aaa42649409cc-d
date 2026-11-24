@@ -1,0 +1,7 @@
+./config.go
+./default.go
+./spec.go
+./validate.go
+./config_test.go
+./spec_test.go
+./validate_test.go

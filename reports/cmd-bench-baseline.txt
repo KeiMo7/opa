@@ -1,0 +1,2 @@
+ok  	github.com/open-policy-agent/opa/cmd	1.712s
+exit=0

@@ -1,0 +1,38 @@
+TOP 30 FILES:
+  3750266701  /home/wll/uid82/.git/objects/pack/pack-25b40053f338331e4f83456cad4febd7a19d0124.pack
+  3561107456  /home/wll/.cache/grype/db/6/vulnerability.db
+  3143692288  /home/wll/uid13/test/integration/.cache/grype-db/c0d0263192d91df04b242e9a91e34cb289118fb08f1ed56eb0239eb57d7a517f/6/vulnerability.db
+  2147499624  /home/wll/uid80/test_big.annoy
+  2147499108  /home/wll/uid176/test_big.annoy
+  1976163472  /home/wll/.cache/huggingface/hub/blobs/bb/bb5a9ddb9b2f7b0aedc24ceff3dc07e94b250a7a2831c71951ae77c1c3e65c8e
+  1811566592  /home/wll/.cache/trivy/db/trivy.db
+  1786703872  /home/wll/tmp/cache/db/trivy.db
+  1746942600  /home/wll/.cache/huggingface/hub/blobs/f0/f0140d845aced424f17b1c75ebc5a67ef75fe309c68d2f613acda2eb551db7dd
+  1215362648  /home/wll/uid107/.git/objects/pack/pack-f068b48c8f9b7c5faead241f9581cfa6abbc22fa.pack
+  1044930068  /home/wll/toolchains/dl/llvm.tar.xz
+   971513261  /home/wll/uid3/.git/objects/pack/pack-50f20a7ce7c639aa49164db3d00f853e80a9c249.pack
+   971502907  /home/wll/uid1/.git/objects/pack/pack-8326c5ee471405ca4d68467ac775da12f84aeded.pack
+   971502907  /home/wll/uid2/.git/objects/pack/pack-7cf83d8ba30e7a203698c8663a6cd3f5a22d01f1.pack
+   971291493  /home/wll/uid181/.git/objects/pack/pack-74a19a7d1582a033bc2fd8a5894af1cfb7cca049.pack
+   800000128  /home/wll/tmpuid160/tmpuies0v4v/fasttext_negative_exp.tst.wv.vectors_ngrams.npy
+   800000128  /home/wll/tmpuid160/tmpag2e4jz7/fasttext_negative_exp.tst.wv.vectors_ngrams.npy
+   800000128  /home/wll/tmpuid160/tmpdedq7sj5/fasttext_negative_exp.tst.wv.vectors_ngrams.npy
+   800000128  /home/wll/tmpuid160/tmp6fqis_3t/fasttext_negative_exp.tst.wv.vectors_ngrams.npy
+   548105171  /home/wll/.cache/huggingface/hub/blobs/63/63bed80836ee0758c8fd4f8975d59bb0b864263ee2753547c358e8a37cde8758
+   539172352  /home/wll/.cache/pip/http-v2/d/4/5/9/c/d459c0bfcbcbb8a1d872c8d4caf70ab2b625895871b4d098aa5656ba.body
+   536870912  /home/wll/tmpgobuild/TestGGUFModelIsCataloged2219677424/001/qwen2.5-0.5b-instruct-q2_k.gguf
+   523224648  /home/wll/uid166/.venv/lib/python3.14/site-packages/triton/_C/libtriton.so
+   523224648  /home/wll/.cache/uv/archive-v0/DUalphE42kQ2hZLX/triton/_C/libtriton.so
+   523224648  /home/wll/uid196/.venv/lib/python3.14/site-packages/triton/_C/libtriton.so
+   523224648  /home/wll/uid70/.venv/lib/python3.14/site-packages/triton/_C/libtriton.so
+   520025889  /home/wll/uid163/.venv/lib/python3.14/site-packages/torch/lib/libtorch_cuda.so
+   520025889  /home/wll/.cache/uv/archive-v0/q7s1ZmzweCOOXVwq/torch/lib/libtorch_cuda.so
+   519150073  /home/wll/.cache/pip/http-v2/e/3/5/f/e/e35fee96c7b2a777c55a93f3568c256f558e7834dab1aeb1f15a0c25.body
+   512245929  /home/wll/.cache/uv/archive-v0/x68JxCql9XUXzl2A/torch/lib/libtorch_cuda.so
+
+/tmp regular-file total: 7142393616 bytes (7.14 GB)
+
+STATFS:
+/tmp total=8.09GB free=0.66GB
+/ total=1081.10GB free=774.94GB
+/home/wll total=1081.10GB free=774.94GB

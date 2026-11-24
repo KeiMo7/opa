@@ -23,6 +23,12 @@ var decisionLogsCounterNames = []string{
 	"enc_log_exceeded_upload_size_limit_bytes",
 	"decision_logs_chunks_uploaded",
 	"decision_logs_chunks_upload_failed",
+	"decision_logs_ledger_records_written",
+	"decision_logs_ledger_write_failures",
+	"decision_logs_ledger_queue_rejected",
+	"decision_logs_ledger_segment_rotations",
+	"decision_logs_ledger_segments_evicted",
+	"decision_logs_ledger_torn_tail_recovered",
 }
 
 type PrometheusConfig struct {
