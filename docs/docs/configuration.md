@@ -957,6 +957,27 @@ their base strings.
 | `caching.inter_query_builtin_value_cache.named.any_suffix_match_seen.max_num_entries` | `int`   | No       | Maximum number of entries in the `any_suffix_match_seen` cache, used by the [`strings.any_suffix_match`](./policy-reference/builtins/strings) built-in function to record, by hash, each collection of suffixes it has been called with once. A collection's trie is only built and kept in the `any_suffix_match` cache when it is seen again. OPA will drop random items from the cache if this limit is exceeded. By default, this cache is set to a maximum of 1000 entries. |
 | `caching.inter_query_builtin_value_cache.named.any_suffix_match_seen.disabled`        | `bool`  | No       | Explicitly disable `any_suffix_match_seen`, by default this is `false`. Setting this to `true` will stop `strings.any_suffix_match` from building tries.                                                                                                                                                                                                                                                                                                                         |
 
+### Decision cache
+
+The `caching.decision_cache` section configures the server-side decision cache. When enabled, decisions returned by
+the `GET` and `POST` `/v1/data` APIs are cached and bound to the revisions of the activated policy bundles (a
+"fence"). A policy or data commit, a bundle revision change, a bundle addition/removal or a roots change all retire
+the affected entries, so a decision computed for an older revision is never returned after a hot reload completes.
+
+The cache only serves requests that can be answered deterministically: requests using `explain`, `instrument`,
+`rule_labels` or `strict-builtin-errors`, requests whose policy reaches a nondeterministic built-in (such as
+`time.now_ns`, `rand.intn`, `http.send` or `uuid.rfc4122`), and requests served by Wasm resolvers bypass it. The
+cache is disabled by default and, when disabled, adds no storage reads and changes no response bytes.
+
+| Field                                              | Type    | Required | Description                                                                                                                                                                   |
+| -------------------------------------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caching.decision_cache.enabled`                   | `bool`  | No       | Enables the decision cache. Defaults to `false`.                                                                                                                              |
+| `caching.decision_cache.max_num_entries`           | `int`   | No       | Maximum number of cached decisions; the oldest entries are evicted first. Defaults to `0`, meaning unlimited. Negative values are rejected.                                   |
+| `caching.decision_cache.max_size_bytes`            | `int64` | No       | Maximum total serialized size of cached decision values in bytes. Defaults to `0`, meaning unlimited. An entry larger than the limit is not stored. Negative values are rejected. |
+| `caching.decision_cache.ttl_seconds`               | `int64` | No       | Time-to-live in seconds for defined decisions. Defaults to `30`. Negative values are rejected.                                                                               |
+| `caching.decision_cache.negative_ttl_seconds`      | `int64` | No       | Time-to-live in seconds for undefined decisions. Defaults to `5`. Negative values are rejected.                                                                              |
+| `caching.decision_cache.debug_headers`             | `bool`  | No       | When `true`, responses carry `OPA-Decision-Cache` (`hit`, `miss` or `bypass`) and `OPA-Decision-Fence` (the first 12 hex characters of the fence digest). Defaults to `false`. |
+
 ## Distributed tracing
 
 Distributed tracing represents the configuration of the OpenTelemetry Tracing.

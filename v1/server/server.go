@@ -35,6 +35,7 @@ import (
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/bundle"
 	"github.com/open-policy-agent/opa/v1/config"
+	"github.com/open-policy-agent/opa/v1/decisioncache"
 	"github.com/open-policy-agent/opa/v1/hooks"
 	"github.com/open-policy-agent/opa/v1/logging"
 	"github.com/open-policy-agent/opa/v1/metrics"
@@ -141,6 +142,9 @@ type Server struct {
 	defaultDecisionPath         string
 	interQueryBuiltinCache      iCache.InterQueryCache
 	interQueryBuiltinValueCache iCache.InterQueryValueCache
+	decisionCache               decisioncache.Cache
+	fenceReader                 *decisioncache.FenceReader
+	ndChecker                   *decisioncache.NondeterminismChecker
 	allPluginsOkOnce            bool
 	distributedTracingOpts      tracing.Options
 	ndbCacheEnabled             bool
@@ -204,6 +208,12 @@ func (s *Server) Init(ctx context.Context) (*Server, error) {
 	s.interQueryBuiltinCache = iCache.NewInterQueryCacheWithContext(ctx, cacheConfig)
 	s.interQueryBuiltinValueCache = iCache.NewInterQueryValueCache(ctx, cacheConfig)
 	s.manager.RegisterCacheTrigger(s.updateCacheConfig)
+
+	// The decision cache is nil unless explicitly enabled; when disabled it
+	// adds no reads and changes no response bytes.
+	s.decisionCache = s.newDecisionCache(ctx, cacheConfig)
+	s.fenceReader = decisioncache.NewFenceReader(s.store)
+	s.ndChecker = decisioncache.NewNondeterminismChecker()
 
 	mainRouter, diagRouter := s.initRouters()
 
@@ -291,6 +301,13 @@ func (s *Server) unregisterStoreTrigger(ctx context.Context) {
 // by the context an error will be returned.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.unregisterStoreTrigger(ctx)
+
+	if s.decisionCache != nil {
+		// Stop the cleanup goroutine; do not block on storage or network.
+		if err := s.decisionCache.Close(); err != nil {
+			s.manager.Logger().Error("Error closing decision cache: %v", err)
+		}
+	}
 
 	errChan := make(chan error)
 	for _, srvr := range s.httpListeners {
@@ -1041,6 +1058,11 @@ func (s *Server) reload(_ context.Context, _ storage.Transaction, evt storage.Tr
 		s.compileUnknownsCache.Purge()
 		s.compileMaskingRulesCache.Purge()
 		s.compileSchemasCache.Purge()
+		if s.decisionCache != nil {
+			s.decisionCache.Invalidate(decisioncache.ReasonPolicy)
+		}
+	} else if evt.DataChanged() && s.decisionCache != nil {
+		s.decisionCache.Invalidate(decisioncache.ReasonData)
 	}
 }
 
@@ -1496,8 +1518,10 @@ func (s *Server) v1DataGet(w http.ResponseWriter, r *http.Request) {
 
 	var input ast.Value
 	var goInput *any
+	var rawInput []byte
 
 	if len(inputs) > 0 {
+		rawInput = util.StringToByteSlice(inputs[len(inputs)-1])
 		var err error
 		input, goInput, err = readInputGetV1(inputs[len(inputs)-1])
 		if err != nil {
@@ -1507,6 +1531,13 @@ func (s *Server) v1DataGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.Timer(metrics.RegoInputParse).Stop()
+
+	// Take a generation ticket before opening the read transaction so a commit
+	// landing during evaluation prevents the stale result from being cached.
+	var ticket *decisioncache.Ticket
+	if s.decisionCacheEnabled() {
+		ticket = s.decisionCache.Begin()
+	}
 
 	// Prepare for query.
 	c := storage.NewContext().WithMetrics(m)
@@ -1536,68 +1567,89 @@ func (s *Server) v1DataGet(w http.ResponseWriter, r *http.Request) {
 		buf = topdown.NewBufferTracer()
 	}
 
-	pqID := "v1DataGet::"
-	if strictBuiltinErrors {
-		pqID += "strict-builtin-errors::"
-	}
-	pqID += urlPath
-	preparedQuery, ok := s.getCachedPreparedEvalQuery(pqID, m)
-	if !ok {
-		opts := []func(*rego.Rego){
-			rego.Compiler(s.getCompiler()),
-			rego.Store(s.store),
-		}
+	// Decision cache handling. The fence is read in this same read
+	// transaction as the evaluation, and every bypass reason keeps the legacy
+	// code path byte-for-byte identical.
+	var (
+		cacheEnabled = s.decisionCacheEnabled()
+		fence        decisioncache.Fence
+		fenceOK      bool
+		bypassed     bool
+		fromCache    bool
+		cachedEntry  *decisioncache.Entry
+		tracker      *topdown.EvaluatedRuleTracker
+	)
 
-		for _, r := range s.manager.GetWasmResolvers() {
-			for _, entrypoint := range r.Entrypoints() {
-				opts = append(opts, rego.Resolver(entrypoint, r))
+	if cacheEnabled {
+		fence, fenceOK = s.readFence(ctx, txn)
+		if !fenceOK {
+			bypassed = true
+			recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+			s.decisionCache.Bypass()
+		} else {
+			bypassed = s.bypassDecisionCache(explainMode, includeInstrumentation, includeRuleLabels, strictBuiltinErrors, fence, urlPath)
+			if bypassed {
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+				s.decisionCache.Bypass()
 			}
 		}
+	}
 
-		rego, err := s.makeRego(ctx, strictBuiltinErrors, txn, input, urlPath, m, includeInstrumentation, buf, opts)
+	var rs rego.ResultSet
+
+	if cacheEnabled && fenceOK && !bypassed {
+		inputKey, keyOK := canonicalInputKey(rawInput)
+		if !keyOK {
+			// Malformed input would already have failed parsing above; fail
+			// safe by bypassing rather than panicking.
+			bypassed = true
+			recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+			s.decisionCache.Bypass()
+		} else {
+			key := cacheKey(urlPath, inputKey, fence)
+			evictedBefore := s.decisionCache.Stats().Evicted
+			entry, hit, getErr := s.decisionCache.Get(ctx, ticket, key, func(_ context.Context) (*decisioncache.Entry, error) {
+				evaluated, evalTracker, evalErr := s.evalDataGet(ctx, txn, input, urlPath, strictBuiltinErrors, includeInstrumentation, buf, m, ndbCache)
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				tracker = evalTracker
+				rs = evaluated
+				return s.newDecisionEntry(fence, evaluated), nil
+			})
+			s.recordEvictionMetric(m, evictedBefore)
+			if getErr != nil {
+				_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, getErr, m, nil, nil)
+				writer.ErrorAuto(w, getErr)
+				return
+			}
+			if hit {
+				fromCache = true
+				cachedEntry = entry
+			} else if entry != nil {
+				// Miss: the load closure already populated rs above.
+				cachedEntry = entry
+			}
+			if hit {
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheHit)
+			} else {
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheMiss)
+			}
+		}
+	}
+
+	if !cacheEnabled || bypassed || (!fromCache && rs == nil) {
+		rs, tracker, err = s.evalDataGet(ctx, txn, input, urlPath, strictBuiltinErrors, includeInstrumentation, buf, m, ndbCache)
 		if err != nil {
 			_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, nil)
 			writer.ErrorAuto(w, err)
 			return
 		}
-
-		pq, err := rego.PrepareForEval(ctx)
-		if err != nil {
-			_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, nil)
-			writer.ErrorAuto(w, err)
-			return
-		}
-		preparedQuery = &pq
-		s.preparedEvalQueries.Insert(pqID, preparedQuery)
 	}
-
-	tracker := newEvaluatedRuleTracker()
-	evalOpts := []rego.EvalOption{
-		rego.EvalTransaction(txn),
-		rego.EvalParsedInput(input),
-		rego.EvalMetrics(m),
-		rego.EvalQueryTracer(buf),
-		rego.EvalInterQueryBuiltinCache(s.interQueryBuiltinCache),
-		rego.EvalInterQueryBuiltinValueCache(s.interQueryBuiltinValueCache),
-		rego.EvalInstrument(includeInstrumentation),
-		rego.EvalNDBuiltinCache(ndbCache),
-		rego.EvalEvaluatedRuleTracker(tracker),
-	}
-
-	rs, err := preparedQuery.Eval(
-		ctx,
-		evalOpts...,
-	)
 
 	m.Timer(metrics.ServerHandler).Stop()
 
 	// Handle results.
-	if err != nil {
-		_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, nil)
-		writer.ErrorAuto(w, err)
-		return
-	}
-
 	result := types.DataResponseV1{
 		DecisionID: decisionID,
 	}
@@ -1607,7 +1659,33 @@ func (s *Server) v1DataGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if provenance {
+		// Provenance is always derived from the live revisions, never from a
+		// digest stored on the entry.
 		result.Provenance = s.getProvenance(br)
+	}
+
+	// Apply the cached decision (hit or freshly loaded) to the response.
+	if fromCache {
+		header, _ := decisionCacheStatus(true, false)
+		s.writeDebugHeaders(w, cachedEntry.Fence, header)
+		applyEntryToResult(&result, cachedEntry)
+
+		var logResult *any
+		if !cachedEntry.Undefined {
+			logResult = result.Result
+		}
+		if err := logger.Log(ctx, txn, urlPath, "", goInput, input, logResult, ndbCache, nil, m, nil, nil); err != nil {
+			writer.ErrorAuto(w, err)
+			return
+		}
+		writer.JSONOK(w, result, pretty(r))
+		return
+	}
+
+	if cacheEnabled && !bypassed && fenceOK {
+		s.writeDebugHeaders(w, fence, decisionCacheMiss)
+	} else if cacheEnabled && bypassed {
+		s.writeDebugHeaders(w, fence, decisionCacheBypass)
 	}
 
 	if len(rs) == 0 {
@@ -1746,6 +1824,13 @@ func (s *Server) v1DataPost(w http.ResponseWriter, r *http.Request) {
 
 	m.Timer(metrics.RegoInputParse).Stop()
 
+	// Take a generation ticket before opening the read transaction so a commit
+	// landing during evaluation prevents the stale result from being cached.
+	var ticket *decisioncache.Ticket
+	if s.decisionCacheEnabled() {
+		ticket = s.decisionCache.Begin()
+	}
+
 	txn, err := s.store.NewTransaction(ctx, storage.TransactionParams{Context: storage.NewContext().WithMetrics(m)})
 	if err != nil {
 		writer.ErrorAuto(w, err)
@@ -1788,72 +1873,102 @@ func (s *Server) v1DataPost(w http.ResponseWriter, r *http.Request) {
 	includeInstrumentation := getBoolParam(r.URL, types.ParamInstrumentV1)
 	includeRuleLabels := getBoolParam(r.URL, types.ParamRuleLabelsV1)
 
-	pqID := "v1DataPost::"
-	if strictBuiltinErrors {
-		pqID = "v1DataPost::strict-builtin-errors::"
-	}
-	pqID += urlPath
-	preparedQuery, ok := s.getCachedPreparedEvalQuery(pqID, m)
-	if !ok {
-		opts := []func(*rego.Rego){
-			rego.Compiler(s.getCompiler()),
-			rego.Store(s.store),
-		}
+	// Decision cache handling. POST requests with response metadata produced
+	// by the evaluation bypass the cache since the metadata is not part of the
+	// cached entry.
+	var (
+		cacheEnabled = s.decisionCacheEnabled()
+		fence        decisioncache.Fence
+		fenceOK      bool
+		bypassed     bool
+		fromCache    bool
+		cachedEntry  *decisioncache.Entry
+		tracker      *topdown.EvaluatedRuleTracker
+	)
 
-		// Set resolvers on the base Rego object to avoid having them get
-		// re-initialized, and to propagate them to the prepared query.
-		for _, r := range s.manager.GetWasmResolvers() {
-			for _, entrypoint := range r.Entrypoints() {
-				opts = append(opts, rego.Resolver(entrypoint, r))
+	if cacheEnabled {
+		fence, fenceOK = s.readFence(ctx, txn)
+		switch {
+		case !fenceOK:
+			bypassed = true
+			recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+			s.decisionCache.Bypass()
+		default:
+			bypassed = s.bypassDecisionCache(explainMode, includeInstrumentation, includeRuleLabels, strictBuiltinErrors, fence, urlPath)
+			if bypassed {
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+				s.decisionCache.Bypass()
 			}
 		}
+	}
 
-		rego, err := s.makeRego(ctx, strictBuiltinErrors, txn, input, urlPath, m, includeInstrumentation, buf, opts)
+	var rs rego.ResultSet
+
+	if cacheEnabled && fenceOK && !bypassed {
+		var inputValue any
+		if goInput != nil {
+			inputValue = *goInput
+		}
+		inputKey, keyOK := canonicalValueKey(inputValue)
+		if !keyOK {
+			bypassed = true
+			recordDecisionCacheMetric(m, metrics.ServerDecisionCacheBypass)
+			s.decisionCache.Bypass()
+		} else {
+			key := cacheKey(urlPath, inputKey, fence)
+			evictedBefore := s.decisionCache.Stats().Evicted
+			// Response metadata can only be produced by custom built-ins
+			// registered by wrapping projects. When such built-ins are in
+			// reach, run through a no-store context so a decision carrying
+			// metadata is never retained; otherwise cache normally.
+			cacheCtx := ctx
+			if s.policyMayProduceResponseMetadata(fence, urlPath) {
+				cacheCtx = decisioncache.WithNoStore(ctx)
+			}
+			entry, hit, getErr := s.decisionCache.Get(cacheCtx, ticket, key, func(_ context.Context) (*decisioncache.Entry, error) {
+				evaluated, evalTracker, evalErr := s.evalDataPost(
+					ctx, txn, input, urlPath, strictBuiltinErrors, includeInstrumentation,
+					buf, m, ndbCache, respMetadata, reqMetadata,
+				)
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				tracker = evalTracker
+				rs = evaluated
+				return s.newDecisionEntry(fence, evaluated), nil
+			})
+			s.recordEvictionMetric(m, evictedBefore)
+			if getErr != nil {
+				_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, getErr, m, nil, customLog())
+				writer.ErrorAuto(w, getErr)
+				return
+			}
+			if hit {
+				fromCache = true
+				cachedEntry = entry
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheHit)
+			} else {
+				cachedEntry = entry
+				recordDecisionCacheMetric(m, metrics.ServerDecisionCacheMiss)
+			}
+		}
+	}
+
+	if !cacheEnabled || bypassed || (!fromCache && rs == nil) {
+		rs, tracker, err = s.evalDataPost(
+			ctx, txn, input, urlPath, strictBuiltinErrors, includeInstrumentation,
+			buf, m, ndbCache, respMetadata, reqMetadata,
+		)
 		if err != nil {
 			_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, customLog())
 			writer.ErrorAuto(w, err)
 			return
 		}
-
-		pq, err := rego.PrepareForEval(ctx)
-		if err != nil {
-			_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, customLog())
-			writer.ErrorAuto(w, err)
-			return
-		}
-		preparedQuery = &pq
-		s.preparedEvalQueries.Insert(pqID, preparedQuery)
 	}
-
-	tracker := newEvaluatedRuleTracker()
-	evalOpts := []rego.EvalOption{
-		rego.EvalTransaction(txn),
-		rego.EvalParsedInput(input),
-		rego.EvalMetrics(m),
-		rego.EvalQueryTracer(buf),
-		rego.EvalInterQueryBuiltinCache(s.interQueryBuiltinCache),
-		rego.EvalInterQueryBuiltinValueCache(s.interQueryBuiltinValueCache),
-		rego.EvalInstrument(includeInstrumentation),
-		rego.EvalNDBuiltinCache(ndbCache),
-		rego.EvalResponseMetadata(respMetadata),
-		rego.EvalEvaluatedRuleTracker(tracker),
-	}
-
-	if reqMetadata != nil {
-		evalOpts = append(evalOpts, rego.EvalRequestMetadata(reqMetadata))
-	}
-
-	rs, err := preparedQuery.Eval(ctx, evalOpts...)
 
 	m.Timer(metrics.ServerHandler).Stop()
 
 	// Handle results.
-	if err != nil {
-		_ = logger.Log(ctx, txn, urlPath, "", goInput, input, nil, ndbCache, err, m, nil, customLog())
-		writer.ErrorAuto(w, err)
-		return
-	}
-
 	result := types.DataResponseV1{
 		DecisionID: decisionID,
 	}
@@ -1873,6 +1988,28 @@ func (s *Server) v1DataPost(w http.ResponseWriter, r *http.Request) {
 
 	if provenance {
 		result.Provenance = s.getProvenance(br)
+	}
+
+	if fromCache {
+		s.writeDebugHeaders(w, cachedEntry.Fence, decisionCacheHit)
+		applyEntryToResult(&result, cachedEntry)
+
+		var logResult *any
+		if !cachedEntry.Undefined {
+			logResult = result.Result
+		}
+		if err = logger.Log(ctx, txn, urlPath, "", goInput, input, logResult, ndbCache, nil, m, nil, customLog()); err != nil {
+			writer.ErrorAuto(w, err)
+			return
+		}
+		writer.JSONOK(w, result, pretty(r))
+		return
+	}
+
+	if cacheEnabled && !bypassed && fenceOK {
+		s.writeDebugHeaders(w, fence, decisionCacheMiss)
+	} else if cacheEnabled && bypassed {
+		s.writeDebugHeaders(w, fence, decisionCacheBypass)
 	}
 
 	if len(rs) == 0 {
@@ -2784,6 +2921,7 @@ func isPathOwned(path, root []string) bool {
 func (s *Server) updateCacheConfig(cacheConfig *iCache.Config) {
 	s.interQueryBuiltinCache.UpdateConfig(cacheConfig)
 	s.interQueryBuiltinValueCache.UpdateConfig(cacheConfig)
+	s.updateDecisionCacheConfig(cacheConfig)
 }
 
 func (s *Server) updateNDCache(enabled bool) {

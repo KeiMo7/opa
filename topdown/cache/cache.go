@@ -18,6 +18,10 @@ import (
 // Config represents the configuration for the inter-query builtin cache.
 type Config = v1.Config
 
+// DecisionCacheConfig represents the configuration of the server-side
+// decision cache.
+type DecisionCacheConfig = v1.DecisionCacheConfig
+
 // InterQueryBuiltinValueCacheConfig represents the configuration of the inter-query value cache that built-in functions can utilize.
 // MaxNumEntries - max number of cache entries
 type InterQueryBuiltinValueCacheConfig = v1.InterQueryBuiltinValueCacheConfig

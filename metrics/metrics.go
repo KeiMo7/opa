@@ -15,21 +15,25 @@ import (
 
 // Well-known metric names.
 const (
-	BundleRequest       = v1.BundleRequest
-	ServerHandler       = v1.ServerHandler
-	ServerQueryCacheHit = v1.ServerQueryCacheHit
-	SDKDecisionEval     = v1.SDKDecisionEval
-	RegoQueryCompile    = v1.RegoQueryCompile
-	RegoQueryEval       = v1.RegoQueryEval
-	RegoQueryParse      = v1.RegoQueryParse
-	RegoModuleParse     = v1.RegoModuleParse
-	RegoDataParse       = v1.RegoDataParse
-	RegoModuleCompile   = v1.RegoModuleCompile
-	RegoPartialEval     = v1.RegoPartialEval
-	RegoInputParse      = v1.RegoInputParse
-	RegoLoadFiles       = v1.RegoLoadFiles
-	RegoLoadBundles     = v1.RegoLoadBundles
-	RegoExternalResolve = v1.RegoExternalResolve
+	BundleRequest              = v1.BundleRequest
+	ServerHandler              = v1.ServerHandler
+	ServerQueryCacheHit        = v1.ServerQueryCacheHit
+	ServerDecisionCacheHit     = v1.ServerDecisionCacheHit
+	ServerDecisionCacheMiss    = v1.ServerDecisionCacheMiss
+	ServerDecisionCacheEvicted = v1.ServerDecisionCacheEvicted
+	ServerDecisionCacheBypass  = v1.ServerDecisionCacheBypass
+	SDKDecisionEval            = v1.SDKDecisionEval
+	RegoQueryCompile           = v1.RegoQueryCompile
+	RegoQueryEval              = v1.RegoQueryEval
+	RegoQueryParse             = v1.RegoQueryParse
+	RegoModuleParse            = v1.RegoModuleParse
+	RegoDataParse              = v1.RegoDataParse
+	RegoModuleCompile          = v1.RegoModuleCompile
+	RegoPartialEval            = v1.RegoPartialEval
+	RegoInputParse             = v1.RegoInputParse
+	RegoLoadFiles              = v1.RegoLoadFiles
+	RegoLoadBundles            = v1.RegoLoadBundles
+	RegoExternalResolve        = v1.RegoExternalResolve
 )
 
 // Info contains attributes describing the underlying metrics provider.

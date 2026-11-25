@@ -22,6 +22,9 @@ const (
 	defaultMaxSizeBytes                      = int64(0)   // unlimited
 	defaultForcedEvictionThresholdPercentage = int64(100) // trigger at max_size_bytes
 	defaultStaleEntryEvictionPeriodSeconds   = int64(0)   // never
+
+	defaultDecisionCacheTTLSeconds         = int64(30)
+	defaultDecisionCacheNegativeTTLSeconds = int64(5)
 )
 
 var interQueryBuiltinValueCacheDefaultConfigs = map[string]*NamedValueCacheConfig{}
@@ -41,6 +44,50 @@ func RegisterDefaultInterQueryBuiltinValueCacheConfig(name string, config *Named
 type Config struct {
 	InterQueryBuiltinCache      InterQueryBuiltinCacheConfig      `json:"inter_query_builtin_cache"`
 	InterQueryBuiltinValueCache InterQueryBuiltinValueCacheConfig `json:"inter_query_builtin_value_cache"`
+	DecisionCache               *DecisionCacheConfig              `json:"decision_cache,omitempty"`
+}
+
+// DecisionCacheConfig represents the configuration of the server-side
+// decision cache that caches whole /v1/data decisions, bound to the revisions
+// of the activated bundles. The cache is disabled unless Enabled is set.
+type DecisionCacheConfig struct {
+	Enabled       bool   `json:"enabled"`
+	MaxNumEntries *int   `json:"max_num_entries,omitempty"`
+	MaxSizeBytes  *int64 `json:"max_size_bytes,omitempty"`
+	TTLSeconds    *int64 `json:"ttl_seconds,omitempty"`
+	NegativeTTL   *int64 `json:"negative_ttl_seconds,omitempty"`
+	DebugHeaders  bool   `json:"debug_headers"`
+}
+
+// Clone creates a deep copy of DecisionCacheConfig.
+func (d *DecisionCacheConfig) Clone() *DecisionCacheConfig {
+	if d == nil {
+		return nil
+	}
+
+	clone := &DecisionCacheConfig{
+		Enabled:      d.Enabled,
+		DebugHeaders: d.DebugHeaders,
+	}
+
+	if d.MaxNumEntries != nil {
+		maxNumEntries := *d.MaxNumEntries
+		clone.MaxNumEntries = &maxNumEntries
+	}
+	if d.MaxSizeBytes != nil {
+		maxSizeBytes := *d.MaxSizeBytes
+		clone.MaxSizeBytes = &maxSizeBytes
+	}
+	if d.TTLSeconds != nil {
+		ttl := *d.TTLSeconds
+		clone.TTLSeconds = &ttl
+	}
+	if d.NegativeTTL != nil {
+		negativeTTL := *d.NegativeTTL
+		clone.NegativeTTL = &negativeTTL
+	}
+
+	return clone
 }
 
 // Clone creates a deep copy of Config.
@@ -52,6 +99,7 @@ func (c *Config) Clone() *Config {
 	return &Config{
 		InterQueryBuiltinCache:      *c.InterQueryBuiltinCache.Clone(),
 		InterQueryBuiltinValueCache: *c.InterQueryBuiltinValueCache.Clone(),
+		DecisionCache:               c.DecisionCache.Clone(),
 	}
 }
 
@@ -235,6 +283,49 @@ func (c *Config) validateAndInjectDefaults() error {
 				return fmt.Errorf("invalid max_num_entries %v for named cache %v", numEntries, name)
 			}
 		}
+	}
+
+	if err := c.DecisionCache.validateAndInjectDefaults(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// defaultDecisionCacheTTLSeconds and defaultDecisionCacheNegativeTTLSeconds
+// are injected when an enabled decision_cache section omits either TTL.
+
+func (d *DecisionCacheConfig) validateAndInjectDefaults() error {
+	if d == nil {
+		return nil
+	}
+
+	if d.MaxNumEntries == nil {
+		maxNumEntries := 0
+		d.MaxNumEntries = &maxNumEntries
+	} else if *d.MaxNumEntries < 0 {
+		return fmt.Errorf("invalid decision_cache max_num_entries %v", *d.MaxNumEntries)
+	}
+
+	if d.MaxSizeBytes == nil {
+		maxSizeBytes := int64(0)
+		d.MaxSizeBytes = &maxSizeBytes
+	} else if *d.MaxSizeBytes < 0 {
+		return fmt.Errorf("invalid decision_cache max_size_bytes %v", *d.MaxSizeBytes)
+	}
+
+	if d.TTLSeconds == nil {
+		ttl := defaultDecisionCacheTTLSeconds
+		d.TTLSeconds = &ttl
+	} else if *d.TTLSeconds < 0 {
+		return fmt.Errorf("invalid decision_cache ttl_seconds %v", *d.TTLSeconds)
+	}
+
+	if d.NegativeTTL == nil {
+		negativeTTL := defaultDecisionCacheNegativeTTLSeconds
+		d.NegativeTTL = &negativeTTL
+	} else if *d.NegativeTTL < 0 {
+		return fmt.Errorf("invalid decision_cache negative_ttl_seconds %v", *d.NegativeTTL)
 	}
 
 	return nil
